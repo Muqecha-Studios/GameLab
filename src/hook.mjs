@@ -84,16 +84,77 @@ export const HOOK_JS = String.raw`(() => {
     post({ type: "console", level: "error", text: "Unhandled rejection: " + fmt(e.reason), stack: e.reason && e.reason.stack, t: Date.now() });
   });
 
+  // ---- activity ring (what happened when) --------------------------------
+  // Used to attribute hitches/long tasks: shader compiles, big uploads, wasm
+  // memory growth, GC (heap drop), asset fetches finishing mid-game.
+  const ACT_MAX = 600;
+  const activity = [];              // { t, kind, info }
+  function act(kind, info) { activity.push({ t: performance.now(), kind: kind, info: info }); if (activity.length > ACT_MAX) activity.shift(); }
+
   // ---- WebGL instrumentation ---------------------------------------------
   // Counters are cumulative; the frame sampler diffs them per rAF tick.
-  const gl = { draws: 0, instances: 0, texUploads: 0, shaderCompiles: 0, programLinks: 0, bufferUploads: 0, contextLost: 0, firstDrawAt: null };
+  const gl = { draws: 0, instances: 0, texUploads: 0, texUploadBytes: 0, shaderCompiles: 0, programLinks: 0, bufferUploads: 0, bufferUploadBytes: 0, contextLost: 0, firstDrawAt: null,
+    programSwitches: 0, fboBinds: 0, texBinds: 0, stateChanges: 0, uniformCalls: 0, readbacks: 0,
+    texturesLive: 0, buffersLive: 0, programsLive: 0, framebuffersLive: 0, textureBytes: 0, bufferBytes: 0, renderbufferBytes: 0 };
   const glContexts = new Set();
+  const texBytes = new WeakMap();   // WebGLTexture -> { [levelKey]: bytes, mip: bool }
+  const bufBytes = new WeakMap();   // WebGLBuffer  -> bytes
+  const rbBytes = new WeakMap();    // WebGLRenderbuffer -> bytes
   function wrap(proto, name, fn) {
     if (!proto || typeof proto[name] !== "function") return;
     const orig = proto[name];
-    proto[name] = function () { fn.apply(this, arguments); return orig.apply(this, arguments); };
+    proto[name] = function () { try { fn.apply(this, arguments); } catch (_) {} return orig.apply(this, arguments); };
   }
   function markDraw(count) { gl.draws++; gl.instances += count || 1; if (gl.firstDrawAt === null) gl.firstDrawAt = performance.now(); }
+  function st(ctx) { let o = ctx.__gpst; if (!o) { o = ctx.__gpst = { unit: 0, tex: {}, buf: {}, rb: null, prog: null, fbo: null }; } return o; }
+  // bytes per pixel for (format, type); good enough for a memory estimate
+  function bpp(ctx, fmt, type) {
+    if (type === ctx.FLOAT) return fmt === ctx.RGBA ? 16 : fmt === ctx.RGB ? 12 : 4;
+    if (type === 0x8D61 /* HALF_FLOAT_OES */ || type === 0x140B /* HALF_FLOAT */) return fmt === ctx.RGBA ? 8 : fmt === ctx.RGB ? 6 : 2;
+    if (type === ctx.UNSIGNED_SHORT_4_4_4_4 || type === ctx.UNSIGNED_SHORT_5_5_5_1 || type === ctx.UNSIGNED_SHORT_5_6_5) return 2;
+    if (type === ctx.UNSIGNED_SHORT || type === 0x84FA /* UNSIGNED_INT_24_8 */ ) return fmt === ctx.RGBA ? 8 : 2;
+    if (type === ctx.UNSIGNED_INT || type === 0x8C3B || type === 0x8C3E) return 4;
+    if (fmt === ctx.RGBA || fmt === 0x8D99 /* RGBA_INTEGER */) return 4;
+    if (fmt === ctx.RGB) return 3;
+    if (fmt === ctx.LUMINANCE_ALPHA) return 2;
+    return 1;
+  }
+  const CUBE_MIN = 0x8515, CUBE_MAX = 0x851A;
+  function bindTarget(t) { return t >= CUBE_MIN && t <= CUBE_MAX ? 0x8513 /* TEXTURE_CUBE_MAP */ : t; }
+  function boundTex(ctx, target) { const o = st(ctx); return (o.tex[o.unit] || {})[bindTarget(target)] || null; }
+  function setTexBytes(ctx, target, level, bytes) {
+    const tex = boundTex(ctx, target); if (!tex) return;
+    let rec = texBytes.get(tex); if (!rec) { rec = { levels: {}, total: 0 }; texBytes.set(tex, rec); }
+    const key = target + ":" + level, prev = rec.levels[key] || 0;
+    rec.levels[key] = bytes; rec.total += bytes - prev; gl.textureBytes += bytes - prev;
+  }
+  function srcDims(src) { if (!src) return null; const w = src.videoWidth || src.naturalWidth || src.width, h = src.videoHeight || src.naturalHeight || src.height; return w && h ? [w, h] : null; }
+  function onTexImage(ctx, a) {
+    // texImage2D(target, level, internalformat, width, height, border, format, type, pixels) | (target, level, internalformat, format, type, source)
+    gl.texUploads++;
+    let w, h, fmt, type;
+    if (a.length >= 9 || (a.length >= 8 && typeof a[3] === "number" && typeof a[4] === "number")) { w = a[3]; h = a[4]; fmt = a[6]; type = a[7]; }
+    else { const d = srcDims(a[a.length - 1]); if (!d) return; w = d[0]; h = d[1]; fmt = a[3]; type = a[4]; }
+    const bytes = Math.round(w * h * bpp(ctx, fmt, type));
+    gl.texUploadBytes += bytes; if (a[1] === 0) setTexBytes(ctx, a[0], 0, bytes);
+    if (bytes > 262144 && gl.firstDrawAt !== null) act("texUpload", w + "x" + h + " " + Math.round(bytes / 1024) + " KB");
+  }
+  function onTexImage3D(ctx, a) {
+    gl.texUploads++; if (a.length < 10) return;
+    const bytes = Math.round(a[3] * a[4] * a[5] * bpp(ctx, a[7], a[8]));
+    gl.texUploadBytes += bytes; if (a[1] === 0) setTexBytes(ctx, a[0], 0, bytes);
+  }
+  function onCompressed(ctx, a) {
+    gl.texUploads++; const data = a[a.length - 1], bytes = data && data.byteLength ? data.byteLength : (typeof a[a.length - 1] === "number" ? a[a.length - 1] : 0);
+    gl.texUploadBytes += bytes; if (a[1] === 0) setTexBytes(ctx, a[0], 0, bytes);
+  }
+  function onBufferData(ctx, a) {
+    gl.bufferUploads++;
+    const d = a[1], bytes = typeof d === "number" ? d : d && d.byteLength ? (a.length >= 5 && typeof a[4] === "number" ? a[4] * (d.BYTES_PER_ELEMENT || 1) : d.byteLength) : 0;
+    gl.bufferUploadBytes += bytes;
+    const buf = st(ctx).buf[a[0]]; if (buf) { const prev = bufBytes.get(buf) || 0; bufBytes.set(buf, bytes); gl.bufferBytes += bytes - prev; }
+    if (bytes > 1048576 && gl.firstDrawAt !== null) act("bufferUpload", Math.round(bytes / 1024) + " KB");
+  }
   for (const P of [typeof WebGLRenderingContext !== "undefined" ? WebGLRenderingContext.prototype : null, typeof WebGL2RenderingContext !== "undefined" ? WebGL2RenderingContext.prototype : null]) {
     if (!P) continue;
     wrap(P, "drawArrays", () => markDraw(1));
@@ -101,13 +162,37 @@ export const HOOK_JS = String.raw`(() => {
     wrap(P, "drawArraysInstanced", (m, f, c, n) => markDraw(n));
     wrap(P, "drawElementsInstanced", (m, c, t, o, n) => markDraw(n));
     wrap(P, "drawRangeElements", () => markDraw(1));
-    wrap(P, "texImage2D", () => gl.texUploads++);
+    wrap(P, "texImage2D", function () { onTexImage(this, arguments); });
     wrap(P, "texSubImage2D", () => gl.texUploads++);
-    wrap(P, "compressedTexImage2D", () => gl.texUploads++);
-    wrap(P, "texImage3D", () => gl.texUploads++);
-    wrap(P, "compileShader", () => gl.shaderCompiles++);
-    wrap(P, "linkProgram", () => gl.programLinks++);
-    wrap(P, "bufferData", () => gl.bufferUploads++);
+    wrap(P, "compressedTexImage2D", function () { onCompressed(this, arguments); });
+    wrap(P, "texImage3D", function () { onTexImage3D(this, arguments); });
+    wrap(P, "texStorage2D", function (t, levels, fmt, w, h) { const b = Math.round(w * h * 4 * (levels > 1 ? 1.34 : 1)); gl.texUploadBytes += b; setTexBytes(this, t, 0, b); });
+    wrap(P, "generateMipmap", function (t) { const tex = boundTex(this, t); const rec = tex && texBytes.get(tex); if (rec && !rec.mip) { rec.mip = true; const extra = Math.round(rec.total * 0.34); rec.total += extra; gl.textureBytes += extra; } });
+    wrap(P, "compileShader", () => { gl.shaderCompiles++; if (gl.firstDrawAt !== null) act("shaderCompile"); });
+    wrap(P, "linkProgram", () => { gl.programLinks++; if (gl.firstDrawAt !== null) act("programLink"); });
+    wrap(P, "bufferData", function () { onBufferData(this, arguments); });
+    wrap(P, "bufferSubData", () => gl.bufferUploads++);
+    wrap(P, "useProgram", function (p) { const o = st(this); if (p !== o.prog) { o.prog = p; gl.programSwitches++; } });
+    wrap(P, "bindFramebuffer", function (t, f) { const o = st(this); if (f !== o.fbo) { o.fbo = f; gl.fboBinds++; } });
+    wrap(P, "activeTexture", function (u) { st(this).unit = u - 0x84C0; });
+    wrap(P, "bindTexture", function (t, tex) { const o = st(this); const slot = o.tex[o.unit] || (o.tex[o.unit] = {}); if (slot[t] !== tex) { slot[t] = tex; gl.texBinds++; } });
+    wrap(P, "bindBuffer", function (t, b) { st(this).buf[t] = b; });
+    wrap(P, "bindRenderbuffer", function (t, rb) { st(this).rb = rb; });
+    wrap(P, "renderbufferStorage", function (t, fmt, w, h) { const rb = st(this).rb; if (!rb) return; const b = w * h * 4, prev = rbBytes.get(rb) || 0; rbBytes.set(rb, b); gl.renderbufferBytes += b - prev; });
+    wrap(P, "renderbufferStorageMultisample", function (t, samples, fmt, w, h) { const rb = st(this).rb; if (!rb) return; const b = w * h * 4 * Math.max(1, samples), prev = rbBytes.get(rb) || 0; rbBytes.set(rb, b); gl.renderbufferBytes += b - prev; });
+    for (const n of ["enable", "disable", "blendFunc", "blendFuncSeparate", "blendEquation", "depthFunc", "depthMask", "cullFace", "frontFace", "colorMask", "stencilFunc", "stencilOp", "viewport", "scissor"]) wrap(P, n, () => gl.stateChanges++);
+    for (const n of ["uniform1f", "uniform1i", "uniform2f", "uniform3f", "uniform4f", "uniform1fv", "uniform2fv", "uniform3fv", "uniform4fv", "uniformMatrix3fv", "uniformMatrix4fv", "uniform1iv"]) wrap(P, n, () => gl.uniformCalls++);
+    wrap(P, "readPixels", () => { gl.readbacks++; if (gl.firstDrawAt !== null) act("readPixels"); });
+    wrap(P, "getError", () => {});
+    wrap(P, "createTexture", () => gl.texturesLive++);
+    wrap(P, "deleteTexture", (tex) => { if (!tex) return; gl.texturesLive--; const rec = texBytes.get(tex); if (rec) { gl.textureBytes -= rec.total; texBytes.delete(tex); } });
+    wrap(P, "createBuffer", () => gl.buffersLive++);
+    wrap(P, "deleteBuffer", (b) => { if (!b) return; gl.buffersLive--; const prev = bufBytes.get(b); if (prev) { gl.bufferBytes -= prev; bufBytes.delete(b); } });
+    wrap(P, "createProgram", () => gl.programsLive++);
+    wrap(P, "deleteProgram", (p) => { if (p) gl.programsLive--; });
+    wrap(P, "createFramebuffer", () => gl.framebuffersLive++);
+    wrap(P, "deleteFramebuffer", (f) => { if (f) gl.framebuffersLive--; });
+    wrap(P, "deleteRenderbuffer", (rb) => { if (!rb) return; const prev = rbBytes.get(rb); if (prev) { gl.renderbufferBytes -= prev; rbBytes.delete(rb); } });
   }
   // ANGLE_instanced_arrays (WebGL1) draws go through the extension object.
   const getExtension = typeof WebGLRenderingContext !== "undefined" ? WebGLRenderingContext.prototype.getExtension : null;
@@ -123,19 +208,92 @@ export const HOOK_JS = String.raw`(() => {
     };
   }
 
+  // ---- GPU frame time (EXT_disjoint_timer_query_webgl2; Chromium desktop) --
+  // One TIME_ELAPSED query spans the commands issued between two of our rAF
+  // ticks (we registered rAF first, so our tick runs before the game's).
+  const gpu = { ext: null, ctx: null, pending: [], active: null, samples: [], unavailable: null, disjoint: 0 };
+  function gpuSetup() {
+    if (gpu.ext || gpu.unavailable) return;
+    const ctx = [...glContexts].filter((c) => typeof WebGL2RenderingContext !== "undefined" && c instanceof WebGL2RenderingContext).sort((a, b) => b.canvas.width * b.canvas.height - a.canvas.width * a.canvas.height)[0];
+    if (!ctx) { if (glContexts.size) gpu.unavailable = "needs WebGL2"; return; }
+    let ext = null; try { ext = ctx.getExtension("EXT_disjoint_timer_query_webgl2"); } catch (_) {}
+    if (!ext) { gpu.unavailable = "EXT_disjoint_timer_query_webgl2 not exposed by this browser/GPU"; return; }
+    gpu.ext = ext; gpu.ctx = ctx;
+  }
+  function gpuTick() {
+    const ctx = gpu.ctx, ext = gpu.ext; if (!ext || ctx.isContextLost()) return;
+    try {
+      if (gpu.active) { ctx.endQuery(ext.TIME_ELAPSED_EXT); gpu.pending.push(gpu.active); gpu.active = null; }
+      // collect finished queries (oldest first)
+      while (gpu.pending.length) {
+        const q = gpu.pending[0];
+        if (!ctx.getQueryParameter(q, ctx.QUERY_RESULT_AVAILABLE)) break;
+        gpu.pending.shift();
+        if (ctx.getParameter(ext.GPU_DISJOINT_EXT)) { gpu.disjoint++; ctx.deleteQuery(q); continue; }
+        const ns = ctx.getQueryParameter(q, ctx.QUERY_RESULT); ctx.deleteQuery(q);
+        gpu.samples.push(ns / 1e6); if (gpu.samples.length > 600) gpu.samples.shift();
+        if (ns > 0) gpu.nonzero = true; else if (!gpu.nonzero && gpu.samples.length >= 120) { gpu.unavailable = "timer query reports 0 ns (this driver does not time GPU work)"; gpu.ext = null; gpu.samples.length = 0; for (const p of gpu.pending) ctx.deleteQuery(p); gpu.pending.length = 0; return; }
+      }
+      if (gpu.pending.length > 8) { ctx.deleteQuery(gpu.pending.shift()); }
+      if (!document.hidden) { const q = ctx.createQuery(); ctx.beginQuery(ext.TIME_ELAPSED_EXT, q); gpu.active = q; }
+    } catch (e) { gpu.unavailable = "timer query failed: " + (e && e.message || e); gpu.ext = null; gpu.active = null; }
+  }
+
   // Keep the WebGL back buffer around so screenshots are not blank, and
   // remember contexts so we can simulate context loss.
   const getContext = HTMLCanvasElement.prototype.getContext;
   HTMLCanvasElement.prototype.getContext = function (type, attrs) {
     if (typeof type === "string" && type.indexOf("webgl") === 0) attrs = Object.assign({}, attrs || {}, { preserveDrawingBuffer: true });
     const ctx = getContext.call(this, type, attrs);
-    if (ctx && typeof type === "string" && type.indexOf("webgl") === 0 && !glContexts.has(ctx)) {
+    if (ctx && typeof type === "string" && type.indexOf("webgl") === 0 && !glContexts.has(ctx) && !this.__gpProbe) {
       glContexts.add(ctx);
-      this.addEventListener("webglcontextlost", () => { gl.contextLost++; post({ type: "console", level: "warn", text: "[game-preview] webglcontextlost", t: Date.now() }); });
-      this.addEventListener("webglcontextrestored", () => post({ type: "console", level: "info", text: "[game-preview] webglcontextrestored", t: Date.now() }));
+      this.addEventListener("webglcontextlost", () => { gl.contextLost++; gpu.ext = null; gpu.active = null; gpu.pending = []; post({ type: "console", level: "warn", text: "[game-preview] webglcontextlost", t: Date.now() }); });
+      this.addEventListener("webglcontextrestored", () => { gpu.unavailable = null; post({ type: "console", level: "info", text: "[game-preview] webglcontextrestored", t: Date.now() }); });
     }
     return ctx;
   };
+  function mainCanvas() { return [...glContexts].map((c) => c.canvas).filter((c) => c && c.isConnected).sort((a, b) => b.width * b.height - a.width * a.height)[0] || null; }
+  function renderInfo() {
+    const c = mainCanvas(); if (!c) return null;
+    const r = c.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    const cssW = Math.round(r.width), cssH = Math.round(r.height);
+    const scale = cssW && cssH ? Math.round(Math.sqrt((c.width * c.height) / (cssW * dpr * cssH * dpr)) * 100) / 100 : null;
+    return { width: c.width, height: c.height, cssWidth: cssW, cssHeight: cssH, dpr: dpr, scale: scale, megapixels: Math.round(c.width * c.height / 1e4) / 100, contexts: glContexts.size };
+  }
+
+  // ---- wasm memory, workers, audio, DOM ----------------------------------
+  const wasm = { memories: new Set(), grows: 0 };
+  try {
+    const OrigMemory = WebAssembly.Memory;
+    const Patched = function Memory(desc) { const m = new OrigMemory(desc); wasm.memories.add(m); return m; };
+    Patched.prototype = OrigMemory.prototype; WebAssembly.Memory = Patched;
+    const grow = OrigMemory.prototype.grow;
+    OrigMemory.prototype.grow = function (pages) { wasm.memories.add(this); wasm.grows++; act("wasmGrow", "+" + Math.round(pages * 64 / 1024) + " MB"); return grow.call(this, pages); };
+    const origInstantiate = WebAssembly.instantiate;
+    WebAssembly.instantiate = function () { const t0 = performance.now(); const r = origInstantiate.apply(this, arguments); Promise.resolve(r).then((res) => { wasm.compileMs = Math.round(performance.now() - t0); const inst = res && res.instance ? res.instance : res; const mem = inst && inst.exports && inst.exports.memory; if (mem instanceof OrigMemory) wasm.memories.add(mem); }).catch(() => {}); return r; };
+    if (WebAssembly.instantiateStreaming) { const origIS = WebAssembly.instantiateStreaming; WebAssembly.instantiateStreaming = function () { const t0 = performance.now(); const r = origIS.apply(this, arguments); Promise.resolve(r).then((res) => { wasm.compileMs = Math.round(performance.now() - t0); const mem = res && res.instance && res.instance.exports && res.instance.exports.memory; if (mem instanceof OrigMemory) wasm.memories.add(mem); }).catch(() => {}); return r; }; }
+  } catch (_) {}
+  function wasmMB() { let b = 0; wasm.memories.forEach((m) => { try { b = Math.max(b, m.buffer.byteLength); } catch (_) {} }); return b ? Math.round(b / 1048576 * 10) / 10 : null; }
+  const workers = { live: 0, created: 0 };
+  try {
+    const OrigWorker = window.Worker;
+    const W = function Worker(url, opts) { const w = new OrigWorker(url, opts); workers.live++; workers.created++; const term = w.terminate.bind(w); w.terminate = function () { workers.live--; return term(); }; return w; };
+    W.prototype = OrigWorker.prototype; window.Worker = W;
+  } catch (_) {}
+  const audioCtxs = new Set();
+  for (const name of ["AudioContext", "webkitAudioContext"]) {
+    try {
+      const Orig = window[name]; if (!Orig) continue;
+      const A = function AudioContext(opts) { const c = new Orig(opts); audioCtxs.add(c); return c; };
+      A.prototype = Orig.prototype; window[name] = A;
+    } catch (_) {}
+  }
+  function audioInfo() {
+    const list = [...audioCtxs];
+    if (!list.length) return { contexts: 0 };
+    const c = list[0];
+    return { contexts: list.length, state: c.state, sampleRate: c.sampleRate, baseLatencyMs: c.baseLatency != null ? Math.round(c.baseLatency * 1000 * 10) / 10 : null, outputLatencyMs: c.outputLatency != null ? Math.round(c.outputLatency * 1000 * 10) / 10 : null, worklet: !!c.audioWorklet };
+  }
 
   // ---- visibility simulation ---------------------------------------------
   let forcedHidden = null;
@@ -151,7 +309,7 @@ export const HOOK_JS = String.raw`(() => {
   // ---- environment probe -------------------------------------------------
   function glInfo() {
     try {
-      const c = document.createElement("canvas");
+      const c = document.createElement("canvas"); c.__gpProbe = true;
       const gl2 = c.getContext("webgl2"); const gl = gl2 || c.getContext("webgl");
       if (!gl) return null;
       const dbg = gl.getExtension("WEBGL_debug_renderer_info");
@@ -178,28 +336,83 @@ export const HOOK_JS = String.raw`(() => {
     },
   });
 
-  // ---- FPS / frame time / heap / hitches / draw calls --------------------
+  // ---- FPS / frame time / CPU+GPU time / hitches / input latency ----------
   const HITCH_MS = 50, HITCH_MAX = 300;
-  const hitches = [];               // { at: ms since timeOrigin, dt }
+  const hitches = [];               // { at: ms since timeOrigin, dt, draws, cause }
   let firstFrameAt = null, frameIndex = 0;
   let frames = 0, windowStart = performance.now(), prev = windowStart, worst = 0;
   let lastDraws = gl.draws, windowDraws = 0, lastFrameDraws = 0;
-  const frameTimes = [];            // last 600 frame dts for percentiles
-  let frameCount = 0;
+  let lastProg = 0, lastTexB = 0, lastFbo = 0, lastState = 0, winProg = 0, winTexB = 0, winFbo = 0, winState = 0;
+  const frameTimes = [];            // last 1200 frame dts for percentiles / lows
+  const cpuTimes = [];              // main-thread time per frame (rAF start -> post-render task)
+  let frameCount = 0, winCpu = 0, winCpuN = 0, winGpu = 0, winGpuN = 0, gpuSeen = 0;
+  let lastHeapMB = null, gcCount = 0;
+  // Main-thread frame time: a MessageChannel message posted during rAF is
+  // delivered after all rAF callbacks and the frame's rendering steps.
+  let tickStart = 0, cpuPending = false;
+  const mc = typeof MessageChannel !== "undefined" ? new MessageChannel() : null;
+  if (mc) mc.port1.onmessage = () => { cpuPending = false; const ms = performance.now() - tickStart; if (frameTimes.length) { cpuTimes.push(ms); if (cpuTimes.length > 1200) cpuTimes.shift(); } winCpu += ms; winCpuN++; };
+  // Input latency: first rAF after an input event -> event.timeStamp
+  const inputLat = [];              // ms, last 200
+  let winInput = 0, winInputN = 0;  // input latency seen in the current fps window
+  let pendingInputTs = null;
+  for (const ev of ["pointerdown", "keydown", "touchstart", "mousedown"]) window.addEventListener(ev, (e) => { if (e.isTrusted !== false && pendingInputTs === null) pendingInputTs = e.timeStamp; }, { capture: true, passive: true });
+  // Event Timing API (Chromium): processing duration of input events
+  const evTiming = [];
+  try { if (window.PerformanceObserver && PerformanceObserver.supportedEntryTypes && PerformanceObserver.supportedEntryTypes.indexOf("event") >= 0) new PerformanceObserver((l) => { for (const e of l.getEntries()) { evTiming.push(e.duration); if (evTiming.length > 200) evTiming.shift(); } }).observe({ type: "event", durationThreshold: 16 }); } catch (_) {}
+  // Long tasks (Chromium): main-thread blocks > 50 ms, independent of rAF
+  const longTasks = { count: 0, totalMs: 0, recent: [] };
+  try { if (window.PerformanceObserver && PerformanceObserver.supportedEntryTypes && PerformanceObserver.supportedEntryTypes.indexOf("longtask") >= 0) new PerformanceObserver((l) => { for (const e of l.getEntries()) { longTasks.count++; longTasks.totalMs += e.duration; longTasks.recent.push({ at: Math.round(e.startTime), ms: Math.round(e.duration), cause: attribute(e.startTime, e.startTime + e.duration) }); if (longTasks.recent.length > 40) longTasks.recent.shift(); } }).observe({ type: "longtask", buffered: true }); } catch (_) {}
+  // What happened in [t0, t1]? Used for hitch/long-task attribution.
+  function attribute(t0, t1) {
+    const hits = {}, res = [];
+    for (let i = activity.length - 1; i >= 0; i--) { const a = activity[i]; if (a.t < t0 - 5) break; if (a.t <= t1 + 5) { hits[a.kind] = (hits[a.kind] || 0) + 1; if (a.info && !hits[a.kind + ":info"]) hits[a.kind + ":info"] = a.info; } }
+    try { for (const r of performance.getEntriesByType("resource").slice(-60)) { const end = r.responseEnd || (r.startTime + r.duration); if (end >= t0 - 5 && end <= t1 + 5 && r.startTime > 2000) res.push(r.name.split("/").pop().split("?")[0]); } } catch (_) {}
+    const parts = [];
+    if (hits.shaderCompile || hits.programLink) parts.push("shader compile" + (hits.shaderCompile > 1 ? " x" + hits.shaderCompile : ""));
+    if (hits.wasmGrow) parts.push("wasm memory grow " + (hits["wasmGrow:info"] || ""));
+    if (hits.texUpload) parts.push("texture upload" + (hits.texUpload > 1 ? " x" + hits.texUpload : "") + (hits["texUpload:info"] ? " (" + hits["texUpload:info"] + ")" : ""));
+    if (hits.bufferUpload) parts.push("buffer upload" + (hits["bufferUpload:info"] ? " (" + hits["bufferUpload:info"] + ")" : ""));
+    if (hits.readPixels) parts.push("readPixels (GPU sync)");
+    if (hits.gc) parts.push("GC");
+    if (res.length) parts.push("asset loaded: " + res.slice(0, 3).join(", "));
+    if (hits.gameEvent) parts.push("during event " + (hits["gameEvent:info"] || ""));
+    if (hits.visibility) parts.push("tab hidden/visible");
+    return parts.length ? parts.join(" + ") : "script (no upload/compile/GC seen)";
+  }
+  document.addEventListener("visibilitychange", () => act("visibility", document.visibilityState));
   function tick(now) {
-    frames++; frameIndex++;
+    frames++; frameIndex++; tickStart = now;
     if (firstFrameAt === null) firstFrameAt = now;
     const dt = now - prev; prev = now;
+    // Frame statistics start once the game is actually rendering (1 s after
+    // the first WebGL draw, or 3 s after the first frame); hitches are always logged.
+    const warm = gl.firstDrawAt !== null ? now - gl.firstDrawAt > 1000 : now - firstFrameAt > 3000;
     if (frameIndex > 1) {
       if (dt > worst) worst = dt;
-      frameTimes.push(dt); if (frameTimes.length > 600) frameTimes.shift(); frameCount++;
-      if (dt > HITCH_MS && !document.hidden) { hitches.push({ at: Math.round(now), dt: Math.round(dt * 10) / 10, draws: lastFrameDraws }); if (hitches.length > HITCH_MAX) hitches.shift(); }
+      if (warm) { frameTimes.push(dt); if (frameTimes.length > 1200) frameTimes.shift(); frameCount++; }
+      if (dt > HITCH_MS && !document.hidden) { hitches.push({ at: Math.round(now), dt: Math.round(dt * 10) / 10, draws: lastFrameDraws, cause: attribute(now - dt, now) }); if (hitches.length > HITCH_MAX) hitches.shift(); }
     }
+    if (pendingInputTs !== null) { const lat = now - pendingInputTs; if (lat >= 0 && lat < 2000) { inputLat.push(Math.round(lat * 10) / 10); if (inputLat.length > 200) inputLat.shift(); winInput += lat; winInputN++; } pendingInputTs = null; }
     lastFrameDraws = gl.draws - lastDraws; lastDraws = gl.draws; windowDraws += lastFrameDraws;
+    winProg += gl.programSwitches - lastProg; lastProg = gl.programSwitches;
+    winTexB += gl.texBinds - lastTexB; lastTexB = gl.texBinds;
+    winFbo += gl.fboBinds - lastFbo; lastFbo = gl.fboBinds;
+    winState += gl.stateChanges - lastState; lastState = gl.stateChanges;
+    if (glContexts.size && !gpu.ext && !gpu.unavailable) gpuSetup();
+    if (gpu.ext) { const before = gpu.samples.length; gpuTick(); for (let i = before; i < gpu.samples.length; i++) { winGpu += gpu.samples[i]; winGpuN++; } }
+    if (mc && !cpuPending) { cpuPending = true; mc.port2.postMessage(0); }
     if (now - windowStart >= 500) {
       const mem = performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null;
-      post({ type: "fps", fps: Math.round((frames * 1000) / (now - windowStart)), worstMs: Math.round(worst * 10) / 10, heapMB: mem, drawCalls: Math.round(windowDraws / frames), t: Date.now() });
-      frames = 0; worst = 0; windowStart = now; windowDraws = 0;
+      if (mem != null && lastHeapMB != null && lastHeapMB - mem >= 3) { gcCount++; act("gc", (lastHeapMB - mem) + " MB freed"); }
+      lastHeapMB = mem;
+      const n = frames || 1;
+      post({ type: "fps", fps: Math.round((frames * 1000) / (now - windowStart)), worstMs: Math.round(worst * 10) / 10, heapMB: mem, drawCalls: Math.round(windowDraws / n), t: Date.now(),
+        cpuMs: winCpuN ? Math.round(winCpu / winCpuN * 10) / 10 : null, gpuMs: winGpuN ? Math.round(winGpu / winGpuN * 10) / 10 : null,
+        progSwitches: Math.round(winProg / n), texBinds: Math.round(winTexB / n), fboBinds: Math.round(winFbo / n), stateChanges: Math.round(winState / n),
+        inputMs: winInputN ? Math.round(winInput / winInputN * 10) / 10 : null });
+      winInput = 0; winInputN = 0;
+      frames = 0; worst = 0; windowStart = now; windowDraws = 0; winProg = winTexB = winFbo = winState = 0; winCpu = winCpuN = winGpu = winGpuN = 0;
     }
     requestAnimationFrame(tick);
   }
@@ -213,6 +426,7 @@ export const HOOK_JS = String.raw`(() => {
     const d = e.detail || {};
     if (d.type && d.type !== "event") return;
     gameEvents.push({ name: String(d.name ?? "event"), data: d.data ?? null, at: Math.round(d.t ?? performance.now()) });
+    act("gameEvent", String(d.name ?? "event"));
     gameEventsTotal++;
     if (gameEvents.length > GAME_EVENTS_MAX) gameEvents.shift();
     post({ type: "game_event", name: String(d.name ?? "event"), data: d.data ?? null, at: Math.round(d.t ?? performance.now()) });
@@ -246,14 +460,55 @@ export const HOOK_JS = String.raw`(() => {
     const s = arr.slice().sort((a, b) => a - b);
     return Math.round(s[Math.min(s.length - 1, Math.floor(p * s.length))] * 10) / 10;
   }
+  function stdev(arr) { if (arr.length < 2) return null; const m = arr.reduce((a, b) => a + b, 0) / arr.length; return Math.round(Math.sqrt(arr.reduce((a, b) => a + (b - m) * (b - m), 0) / arr.length) * 10) / 10; }
+  function lows(arr) {
+    // "1% low" = mean fps of the slowest 1% of frames (the gaming benchmark convention)
+    if (arr.length < 100) return { low1: null, low01: null };
+    const s = arr.slice().sort((a, b) => b - a);
+    const n1 = Math.max(1, Math.floor(s.length * 0.01)), n01 = Math.max(1, Math.floor(s.length * 0.001));
+    const mean = (k) => s.slice(0, k).reduce((a, b) => a + b, 0) / k;
+    return { low1: Math.round(1000 / mean(n1)), low01: arr.length >= 1000 ? Math.round(1000 / mean(n01)) : null };
+  }
+  function bound() {
+    // Where is the frame budget going? Main-thread time (rAF start → after rendering
+    // steps), GPU time (timer query) and the actual frame interval, all p50.
+    const dt = percentile(frameTimes, 0.5), cpu = percentile(cpuTimes, 0.5), gpuP = gpu.samples.length >= 30 ? percentile(gpu.samples, 0.5) : null;
+    if (dt == null || cpu == null || frameTimes.length < 120) return { kind: "unknown", why: "not enough samples yet" };
+    const gpuTxt = gpuP != null ? ", GPU " + gpuP + " ms" : "";
+    if (dt <= 17.5) {
+      // Holding the display rate: the frame interval is set by vsync, so main-thread
+      // time tells us the headroom, not the bottleneck.
+      const head = Math.round((16.7 - Math.max(cpu, gpuP || 0)) * 10) / 10;
+      return { kind: head < 4 ? "vsync-tight" : "vsync", headroomMs: head, why: "holding " + Math.round(1000 / dt) + " fps (main " + cpu + " ms" + gpuTxt + ", ~" + head + " ms headroom" + (head < 4 ? " — slower devices will drop frames" : "") + ")" };
+    }
+    if (cpu >= dt * 0.75) return { kind: "cpu", why: "main thread busy " + cpu + " ms of a " + dt + " ms frame" + gpuTxt };
+    if (gpuP != null && gpuP >= dt * 0.75) return { kind: "gpu", why: "GPU " + gpuP + " ms of a " + dt + " ms frame (main " + cpu + " ms)" };
+    if (gpuP == null && cpu < dt * 0.5) return { kind: "gpu?", why: "main thread only " + cpu + " ms of a " + dt + " ms frame and GPU time is unavailable here — likely GPU-bound, or a " + Math.round(1000 / dt) + " Hz display/throttled tab" };
+    return { kind: "mixed", why: "frame " + dt + " ms, main " + cpu + " ms" + gpuTxt + " — neither side dominates; look at hitches and long tasks" };
+  }
   function metrics() {
-    const wasm = performance.getEntriesByType("resource").filter((r) => /\.wasm(\?|$)/.test(r.name));
+    const wasmRes = performance.getEntriesByType("resource").filter((r) => /\.wasm(\?|$)/.test(r.name));
+    const lo = lows(frameTimes), med = percentile(frameTimes, 0.5);
+    const dropped = med ? frameTimes.filter((d) => d > med * 1.5).length : 0;
     return {
       game: gameSnapshotSync(),
-      frame: { lastDrawCalls: lastFrameDraws, p50Ms: percentile(frameTimes, 0.5), p95Ms: percentile(frameTimes, 0.95), p99Ms: percentile(frameTimes, 0.99), maxMs: percentile(frameTimes, 1), samples: frameTimes.length },
+      frame: { lastDrawCalls: lastFrameDraws, p50Ms: med, p95Ms: percentile(frameTimes, 0.95), p99Ms: percentile(frameTimes, 0.99), maxMs: percentile(frameTimes, 1), samples: frameTimes.length,
+        low1PctFps: lo.low1, low01PctFps: lo.low01, jitterMs: stdev(frameTimes), droppedPct: frameTimes.length ? Math.round(dropped / frameTimes.length * 1000) / 10 : null },
+      cpu: { p50Ms: percentile(cpuTimes, 0.5), p95Ms: percentile(cpuTimes, 0.95), maxMs: percentile(cpuTimes, 1), samples: cpuTimes.length },
+      gpu: gpu.ext || gpu.samples.length ? { p50Ms: percentile(gpu.samples, 0.5), p95Ms: percentile(gpu.samples, 0.95), maxMs: percentile(gpu.samples, 1), samples: gpu.samples.length, disjoint: gpu.disjoint } : { unavailable: gpu.unavailable || (glContexts.size ? "waiting for a WebGL2 context" : "no WebGL context yet") },
+      bound: bound(),
       hitches: { count: hitches.length, thresholdMs: HITCH_MS, recent: hitches.slice(-20) },
-      webgl: { drawCallsTotal: gl.draws, instancesTotal: gl.instances, textureUploads: gl.texUploads, shaderCompiles: gl.shaderCompiles, programLinks: gl.programLinks, bufferUploads: gl.bufferUploads, contextLostCount: gl.contextLost, contexts: glContexts.size },
-      memory: { heapMB: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null, heapLimitMB: performance.memory ? Math.round(performance.memory.jsHeapSizeLimit / 1048576) : null, wasmBytes: wasm.reduce((a, r) => a + (r.decodedBodySize || 0), 0) || null },
+      longTasks: window.PerformanceObserver && PerformanceObserver.supportedEntryTypes && PerformanceObserver.supportedEntryTypes.indexOf("longtask") >= 0 ? { count: longTasks.count, totalMs: Math.round(longTasks.totalMs), recent: longTasks.recent.slice(-12) } : { unavailable: "Long Tasks API not supported" },
+      input: { samples: inputLat.length, lastMs: inputLat.length ? inputLat[inputLat.length - 1] : null, p50Ms: percentile(inputLat, 0.5), p95Ms: percentile(inputLat, 0.95), eventTimingP95Ms: evTiming.length ? percentile(evTiming, 0.95) : null },
+      render: renderInfo(),
+      webgl: { drawCallsTotal: gl.draws, instancesTotal: gl.instances, textureUploads: gl.texUploads, textureUploadMB: Math.round(gl.texUploadBytes / 1048576 * 10) / 10, shaderCompiles: gl.shaderCompiles, programLinks: gl.programLinks, bufferUploads: gl.bufferUploads, bufferUploadMB: Math.round(gl.bufferUploadBytes / 1048576 * 10) / 10, contextLostCount: gl.contextLost, contexts: glContexts.size,
+        programSwitchesTotal: gl.programSwitches, fboBindsTotal: gl.fboBinds, textureBindsTotal: gl.texBinds, stateChangesTotal: gl.stateChanges, uniformCallsTotal: gl.uniformCalls, readbacks: gl.readbacks,
+        live: { textures: gl.texturesLive, buffers: gl.buffersLive, programs: gl.programsLive, framebuffers: gl.framebuffersLive },
+        estMemoryMB: { textures: Math.round(gl.textureBytes / 1048576 * 10) / 10, buffers: Math.round(gl.bufferBytes / 1048576 * 10) / 10, renderbuffers: Math.round(gl.renderbufferBytes / 1048576 * 10) / 10 } },
+      memory: { heapMB: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null, heapLimitMB: performance.memory ? Math.round(performance.memory.jsHeapSizeLimit / 1048576) : null,
+        wasmBytes: wasmRes.reduce((a, r) => a + (r.decodedBodySize || 0), 0) || null, wasmMemoryMB: wasmMB(), wasmGrows: wasm.grows, wasmCompileMs: wasm.compileMs || null, gcCount: gcCount, domNodes: document.getElementsByTagName("*").length },
+      audio: audioInfo(),
+      threads: { workers: workers.live, workersCreated: workers.created, sharedArrayBuffer: typeof SharedArrayBuffer !== "undefined", crossOriginIsolated: !!self.crossOriginIsolated, cores: navigator.hardwareConcurrency || null },
       visibility: document.visibilityState,
       uptimeMs: Math.round(performance.now()),
       gameEvents: { total: gameEventsTotal, recent: gameEvents.slice(-10) },
@@ -283,7 +538,7 @@ export const HOOK_JS = String.raw`(() => {
     gameState: () => gameSnapshot(true),
     gameCommand: gameCommand,
     gameEvents: () => gameEvents.slice(),
-    resetHitches: () => { hitches.length = 0; frameTimes.length = 0; },
+    resetHitches: () => { hitches.length = 0; frameTimes.length = 0; cpuTimes.length = 0; gpu.samples.length = 0; inputLat.length = 0; longTasks.count = 0; longTasks.totalMs = 0; longTasks.recent.length = 0; },
     setVisibility: (hidden) => { forcedHidden = hidden === null ? null : !!hidden; document.dispatchEvent(new Event("visibilitychange")); window.dispatchEvent(new Event(forcedHidden ? "blur" : "focus")); return document.visibilityState; },
     loseContext: async (restoreAfterMs) => {
       const ctx = [...glContexts].sort((a, b) => b.canvas.width * b.canvas.height - a.canvas.width * a.canvas.height)[0];

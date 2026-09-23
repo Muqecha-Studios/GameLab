@@ -103,13 +103,14 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   #graph { flex:1; display:none; position:relative; min-height:0; overflow:auto; }
   #drawer.graph #graph { display:block; } #drawer.graph #log, #drawer.graph .con, #drawer.graph #resetm, #drawer.graph #profms, #drawer.graph #prof { display:none; }
   .gr { display:none; } #drawer.graph .gr { display:inline-flex; } #drawer.graph select.gr { display:inline-block; }
-  #glanes { gap:4px; } #glanes .tog { height:22px; padding:0 8px 0 6px; color:var(--mute); } #glanes .tog[aria-pressed=true] { color:var(--fg); }
+  #glanes { gap:4px; flex:1; min-width:0; overflow-x:auto; scrollbar-width:none; -webkit-mask:linear-gradient(90deg,#000 calc(100% - 18px),transparent); mask:linear-gradient(90deg,#000 calc(100% - 18px),transparent); }
+  #glanes::-webkit-scrollbar { display:none; } #glanes .tog { height:22px; padding:0 8px 0 6px; color:var(--mute); white-space:nowrap; flex:none; } #glanes .tog[aria-pressed=true] { color:var(--fg); }
   #gc { display:block; width:100%; cursor:crosshair; touch-action:none; }
   #gempty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; line-height:1.6; pointer-events:none; }
   .sec { display:grid; grid-template-columns:64px 1fr; gap:2px 10px; padding:4px 0; border-bottom:1px solid #12151b; }
   .sec > b { color:var(--mute); font-weight:600; }
   .kv { display:inline-block; margin-right:14px; } .kv i { color:var(--mute); font-style:normal; margin-right:4px; }
-  .kv.warn { color:var(--warn);} .kv.bad { color:var(--err);}
+  .kv.warn { color:var(--warn);} .kv.bad { color:var(--err);} .kv.ok { color:var(--ok);} .kv.dim { color:var(--mute);}
   #findings li { margin:1px 0; } #findings li.warn { color:var(--warn);} #findings li.bad { color:#ff8a8a;} #findings li.info { color:#9cc7ff;}
   #findings ul { margin:0; padding-left:16px; }
   table.prof { border-collapse:collapse; width:100%; margin-top:4px; } table.prof td, table.prof th { text-align:left; padding:1px 8px 1px 0; white-space:nowrap; } table.prof th { color:var(--mute); font-weight:600; }
@@ -202,7 +203,7 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   var env = null, connected = false, loadedAt = Date.now();
   var logs = [], filter = "all", query = "", counts = { log: 0, info: 0, warn: 0, error: 0, debug: 0 };
   var fpsHist = [], fpsWindow = []; // fpsWindow: last ~60s of samples
-  var hist = [], HIST_MAX = 2400, lastEngine = null, marks = []; // hist: 0.5 s samples for the Timeline tab (~20 min)
+  var hist = [], HIST_MAX = 2400, lastEngine = null, lastRes = null, marks = []; // hist: 0.5 s samples for the Timeline tab (~20 min)
   var MAXLOGS = 3000;
 
   // ---- viewport ----
@@ -403,7 +404,7 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   function onFps(m) {
     fpsHist.push(m.fps); if (fpsHist.length > 64) fpsHist.shift();
     fpsWindow.push(m); if (fpsWindow.length > 120) fpsWindow.shift();
-    hist.push({ t: m.t || Date.now(), fps: m.fps, worstMs: m.worstMs, heapMB: m.heapMB, drawCalls: m.drawCalls, eng: lastEngine }); if (hist.length > HIST_MAX) hist.shift();
+    hist.push({ t: m.t || Date.now(), fps: m.fps, worstMs: m.worstMs, heapMB: m.heapMB, drawCalls: m.drawCalls, cpuMs: m.cpuMs, gpuMs: m.gpuMs, inputMs: m.inputMs, progSwitches: m.progSwitches, texBinds: m.texBinds, fboBinds: m.fboBinds, stateChanges: m.stateChanges, eng: lastEngine, res: lastRes }); if (hist.length > HIST_MAX) hist.shift();
     if (perf.tab === "graph") scheduleGraph();
     var el = $("fps"); el.textContent = m.fps + " fps"; el.className = m.fps >= 55 ? "" : m.fps >= 30 ? "warn" : "bad";
     el.title = "worst frame " + m.worstMs + " ms" + (m.drawCalls != null ? " · " + m.drawCalls + " draw calls/frame" : "");
@@ -554,6 +555,7 @@ export function renderShell({ title, source, gameSrc, isolation }) {
       var ent = gm ? (gm.nodes != null ? gm.nodes : gm.entities != null ? gm.entities : gm.objects) : null;
       if (typeof ent === "number") { perf.nodeHist.push({ t: now, n: ent }); while (perf.nodeHist.length && now - perf.nodeHist[0].t > 60000) perf.nodeHist.shift(); }
       lastEngine = gm ? engineSample(gm, ent) : null;
+      lastRes = resSample(m);
       if (m.memory && m.memory.heapMB != null) { perf.heapHist.push({ t: now, mb: m.memory.heapMB }); while (perf.heapHist.length && now - perf.heapHist[0].t > 60000) perf.heapHist.shift(); }
       if (!perf.timeline || (perf.timeline.firstWebglDrawMs === null && m.uptimeMs < 60000)) askGame("load_timeline").then(function (t) { perf.timeline = t; if (perf.tab === "perf") renderPerf(); }).catch(function () {});
       if (perf.tab === "perf") renderPerf();
@@ -632,15 +634,56 @@ export function renderShell({ title, source, gameSrc, isolation }) {
     var m = perf.lastM; if (!m) return;
     var f = m.frame, w = m.webgl, r = perf.rates, t = perf.timeline, h = '';
     var fcls = function (v) { return v > 33.4 ? "bad" : v > 17.5 ? "warn" : ""; };
-    h += '<div class="sec"><b>Frame</b><div>' + kv("p50", f.p50Ms + " ms", fcls(f.p50Ms)) + kv("p95", f.p95Ms + " ms", fcls(f.p95Ms)) + kv("p99", f.p99Ms + " ms", fcls(f.p99Ms)) + kv("max", f.maxMs + " ms", fcls(f.maxMs)) + kv("samples", f.samples) +
-      kv("hitches", m.hitches.count + " >" + m.hitches.thresholdMs + "ms", m.hitches.count ? "warn" : "") + kv("visibility", m.visibility) + kv("uptime", secs(m.uptimeMs)) + '</div></div>';
-    if (m.hitches.recent.length) {
-      h += '<div class="sec"><b>Hitches</b><div>' + m.hitches.recent.slice(-12).map(function (x) { return kv("@" + secs(x.at), x.dt + " ms" + (x.draws != null ? " · " + x.draws + " dc" : ""), x.dt > 200 ? "bad" : "warn"); }).join("") + '</div></div>';
+    var last = hist.length ? hist[hist.length - 1] : {};
+    h += '<div class="sec"><b>Frame</b><div>' + kv("p50", f.p50Ms + " ms", fcls(f.p50Ms)) + kv("p95", f.p95Ms + " ms", fcls(f.p95Ms)) + kv("p99", f.p99Ms + " ms", fcls(f.p99Ms)) + kv("max", f.maxMs + " ms", fcls(f.maxMs)) +
+      (f.low1PctFps != null ? kv("1% low", f.low1PctFps + " fps", f.low1PctFps < 30 ? "bad" : f.low1PctFps < 50 ? "warn" : "", "Mean fps of the slowest 1% of frames — what stutter feels like") : "") + (f.low01PctFps != null ? kv("0.1% low", f.low01PctFps + " fps", f.low01PctFps < 20 ? "bad" : f.low01PctFps < 40 ? "warn" : "", "Mean fps of the slowest 0.1% of frames (needs ≥1000 samples)") : "") +
+      (f.jitterMs != null ? kv("jitter", f.jitterMs + " ms", f.jitterMs > 8 ? "warn" : "", "Std-dev of frame time — uneven pacing feels worse than a steady lower fps") : "") + (f.droppedPct != null ? kv("dropped", f.droppedPct + "%", f.droppedPct > 5 ? "warn" : "", "Frames longer than 1.5× the median") : "") +
+      kv("samples", f.samples) + kv("hitches", m.hitches.count + " >" + m.hitches.thresholdMs + "ms", m.hitches.count ? "warn" : "") + kv("visibility", m.visibility) + kv("uptime", secs(m.uptimeMs)) + '</div></div>';
+    if (m.cpu) {
+      var c = m.cpu, g = m.gpu || {}, bd = m.bound || {}, bcls = { cpu: "bad", gpu: "bad", "gpu?": "warn", mixed: "warn", vsync: "ok", "vsync-tight": "warn", unknown: "dim" }[bd.kind] || "";
+      var bname = { cpu: "CPU-bound", gpu: "GPU-bound", "gpu?": "likely GPU-bound", mixed: "mixed", vsync: "vsync-limited", "vsync-tight": "vsync-limited, little headroom", unknown: "collecting…" }[bd.kind] || bd.kind;
+      h += '<div class="sec"><b>CPU / GPU</b><div>' + kv("main thread p50", c.p50Ms != null ? c.p50Ms + " ms" : "–", fcls(c.p50Ms), "Time from the start of the frame callback until the browser finished the rendering steps (MessageChannel probe)") + kv("p95", c.p95Ms != null ? c.p95Ms + " ms" : "–", fcls(c.p95Ms)) + kv("max", c.maxMs != null ? c.maxMs + " ms" : "–") +
+        (g.unavailable ? kv("GPU", "n/a", "dim", g.unavailable) : kv("GPU p50", g.p50Ms + " ms", fcls(g.p50Ms), "EXT_disjoint_timer_query_webgl2 — GPU time per frame") + kv("p95", g.p95Ms + " ms", fcls(g.p95Ms)) + (g.disjoint ? kv("disjoint", g.disjoint, "warn", "GPU timer was reset (clock change/power state) — those samples were dropped") : "")) +
+        kv("verdict", bname, bcls, bd.why || "") + (g.unavailable ? '<div class="muted" style="margin-top:4px">' + esc(g.unavailable) + (g.unavailable.indexOf("0 ns") >= 0 || g.unavailable.indexOf("not exposed") >= 0 ? " — open the shell in desktop Chrome for GPU timings." : "") + '</div>' : "") + '</div></div>';
     }
-    h += '<div class="sec"><b>WebGL</b><div>' + kv("draws/frame", f.lastDrawCalls) + kv("draws/s", Math.round(r.draws || 0)) + kv("instances", w.instancesTotal) + kv("tex uploads", w.textureUploads + (r.tex ? " (" + r1(r.tex) + "/s)" : ""), r.tex > 2 ? "warn" : "") +
-      kv("buffer uploads", w.bufferUploads + (r.buf ? " (" + Math.round(r.buf) + "/s)" : "")) + kv("shader compiles", w.shaderCompiles, (perf.shaderBase !== null && w.shaderCompiles > perf.shaderBase) ? "warn" : "") + kv("programs", w.programLinks) + kv("contexts", w.contexts) + kv("ctx lost", w.contextLostCount, w.contextLostCount ? "bad" : "") + '</div></div>';
-    var hd = heapDelta();
-    h += '<div class="sec"><b>Memory</b><div>' + kv("heap", m.memory.heapMB != null ? m.memory.heapMB + " MB" + (m.memory.heapLimitMB ? " / " + m.memory.heapLimitMB : "") : "n/a (needs Chromium)") + (hd ? kv("trend", (hd.perMin > 0 ? "+" : "") + hd.perMin + " MB/min", hd.perMin > 8 ? "warn" : "") : "") + kv("wasm", m.memory.wasmBytes ? (m.memory.wasmBytes / 1048576).toFixed(1) + " MB" : "–") + '</div></div>';
+    if (m.hitches.recent.length) {
+      h += '<div class="sec"><b>Hitches</b><div>' + m.hitches.recent.slice(-12).map(function (x) { return kv("@" + secs(x.at), x.dt + " ms" + (x.cause ? " · " + x.cause : (x.draws != null ? " · " + x.draws + " dc" : "")), x.dt > 200 ? "bad" : "warn", (x.draws != null ? x.draws + " draw calls in that frame" : "")); }).join("") + '</div></div>';
+    }
+    if (m.longTasks && !m.longTasks.unavailable && m.longTasks.count) {
+      var lt = m.longTasks;
+      h += '<div class="sec"><b>Long tasks</b><div>' + kv("count", lt.count, "", "Main-thread tasks over 50 ms (Long Tasks API)") + kv("total", secs(lt.totalMs)) + lt.recent.slice(-8).map(function (x) { return kv("@" + secs(x.at), x.ms + " ms" + (x.cause ? " · " + x.cause : ""), x.ms > 200 ? "bad" : "warn"); }).join("") + '</div></div>';
+    }
+    if (m.render && m.render.width) {
+      var rr = m.render, scls = rr.scale > 1.05 ? "warn" : rr.scale < 0.7 ? "warn" : "";
+      h += '<div class="sec"><b>Render</b><div>' + kv("canvas", rr.width + "×" + rr.height, "", "Back-buffer size the GPU actually fills") + kv("display", Math.round(rr.cssWidth) + "×" + Math.round(rr.cssHeight) + " @" + rr.dpr + "x", "", "CSS size × devicePixelRatio") +
+        kv("scale", rr.scale + "×", scls, rr.scale > 1.05 ? "Rendering more pixels than the display shows — wasted fill rate" : rr.scale < 0.7 ? "Rendering well under display resolution — will look soft" : "1× = one canvas pixel per device pixel") + kv("megapixels", rr.megapixels, rr.megapixels > 4 ? "warn" : "", "Fill-rate cost scales with this; mobile GPUs struggle past ~2–3 MP") + kv("contexts", rr.contexts) + '</div></div>';
+    }
+    var lv = w.live || {}, em = w.estMemoryMB || {};
+    h += '<div class="sec"><b>WebGL</b><div>' + kv("draws/frame", f.lastDrawCalls) + kv("draws/s", Math.round(r.draws || 0)) + kv("instances", w.instancesTotal) +
+      (last.progSwitches != null ? kv("programs/frame", last.progSwitches, last.progSwitches > 200 ? "warn" : "", "useProgram calls per frame — sort by material to reduce") + kv("tex binds/frame", last.texBinds, "", "bindTexture calls per frame") + kv("fbo binds/frame", last.fboBinds, "", "bindFramebuffer calls per frame — each render target switch") + kv("state/frame", last.stateChanges, last.stateChanges > 1500 ? "warn" : "", "blend/depth/cull/viewport/scissor toggles per frame") : "") +
+      kv("tex uploads", w.textureUploads + (r.tex ? " (" + r1(r.tex) + "/s)" : "") + (w.textureUploadMB ? " · " + w.textureUploadMB + " MB" : ""), r.tex > 2 ? "warn" : "") +
+      kv("buffer uploads", w.bufferUploads + (r.buf ? " (" + Math.round(r.buf) + "/s)" : "") + (w.bufferUploadMB ? " · " + w.bufferUploadMB + " MB" : "")) + kv("shader compiles", w.shaderCompiles, (perf.shaderBase !== null && w.shaderCompiles > perf.shaderBase) ? "warn" : "") + kv("programs", w.programLinks) +
+      (w.readbacks ? kv("readbacks", w.readbacks, "warn", "readPixels stalls the pipeline until the GPU catches up") : "") + kv("contexts", w.contexts) + kv("ctx lost", w.contextLostCount, w.contextLostCount ? "bad" : "") +
+      (lv.textures != null ? '<br><i class="muted">live</i> ' + kv("textures", lv.textures + (em.textures != null ? " · ~" + em.textures + " MB" : ""), em.textures > 512 ? "warn" : "", "Estimated from upload sizes (+34% for mipmaps); compressed formats counted at their real size") + kv("buffers", lv.buffers + (em.buffers != null ? " · ~" + em.buffers + " MB" : "")) + kv("renderbuffers", (em.renderbuffers != null ? "~" + em.renderbuffers + " MB" : "–")) + kv("programs", lv.programs) + kv("framebuffers", lv.framebuffers) : "") + '</div></div>';
+    var hd = heapDelta(), mm = m.memory;
+    h += '<div class="sec"><b>Memory</b><div>' + kv("heap", mm.heapMB != null ? mm.heapMB + " MB" + (mm.heapLimitMB ? " / " + mm.heapLimitMB : "") : "n/a (needs Chromium)") + (hd ? kv("trend", (hd.perMin > 0 ? "+" : "") + hd.perMin + " MB/min", hd.perMin > 8 ? "warn" : "") : "") +
+      (mm.gcCount != null ? kv("GC", mm.gcCount + "×", "", "Heap drops ≥3 MB between samples — a rough GC count") : "") +
+      kv("wasm", mm.wasmMemoryMB != null ? mm.wasmMemoryMB + " MB" + (mm.wasmGrows ? " (+" + mm.wasmGrows + " grow" + (mm.wasmGrows > 1 ? "s" : "") + ")" : "") : (mm.wasmBytes ? (mm.wasmBytes / 1048576).toFixed(1) + " MB file" : "–"), mm.wasmGrows > 3 ? "warn" : "", mm.wasmMemoryMB != null ? "Linear memory; each grow copies the heap and can hitch" : "") +
+      (mm.wasmCompileMs ? kv("wasm compile", secs(mm.wasmCompileMs)) : "") + (mm.domNodes != null ? kv("DOM nodes", mm.domNodes, mm.domNodes > 3000 ? "warn" : "", "Large DOM (HTML UI overlays) slows style/layout each frame") : "") + '</div></div>';
+    if (m.input && (m.input.samples || m.input.eventTimingP95Ms != null)) {
+      var inp = m.input, icls = function (v) { return v > 100 ? "bad" : v > 50 ? "warn" : ""; };
+      h += '<div class="sec"><b>Input</b><div>' + kv("event → frame p50", inp.p50Ms != null ? inp.p50Ms + " ms" : "–", icls(inp.p50Ms), "From pointer/key event to the next rendered frame") + kv("p95", inp.p95Ms != null ? inp.p95Ms + " ms" : "–", icls(inp.p95Ms)) + kv("last", inp.lastMs != null ? inp.lastMs + " ms" : "–") + kv("samples", inp.samples) +
+        (inp.eventTimingP95Ms != null ? kv("event timing p95", inp.eventTimingP95Ms + " ms", icls(inp.eventTimingP95Ms), "Browser-measured input→paint (Event Timing API)") : "") + '</div></div>';
+    }
+    if (m.audio && m.audio.contexts) {
+      var au = m.audio;
+      h += '<div class="sec"><b>Audio</b><div>' + kv("contexts", au.contexts) + kv("state", au.state, au.state === "suspended" ? "warn" : "", au.state === "suspended" ? "Needs a user gesture to start — call resume() on first click/tap" : "") + kv("sample rate", au.sampleRate ? au.sampleRate / 1000 + " kHz" : "–") +
+        (au.baseLatencyMs != null ? kv("base latency", au.baseLatencyMs + " ms") : "") + (au.outputLatencyMs != null ? kv("output latency", au.outputLatencyMs + " ms", au.outputLatencyMs > 100 ? "warn" : "", "Time from AudioContext to the speaker — high values make sound feel late") : "") + kv("worklet", au.worklet ? "yes" : "no") + '</div></div>';
+    }
+    if (m.threads) {
+      var th = m.threads;
+      h += '<div class="sec"><b>Threads</b><div>' + kv("workers", th.workers + (th.workersCreated > th.workers ? " (" + th.workersCreated + " created)" : "")) + kv("SharedArrayBuffer", th.sharedArrayBuffer ? "yes" : "no", th.sharedArrayBuffer ? "" : "warn", th.sharedArrayBuffer ? "" : "No SAB — wasm threads are off; needs cross-origin isolation (COOP/COEP headers)") + kv("isolated", th.crossOriginIsolated ? "yes" : "no") + kv("cores", th.cores || "–") + '</div></div>';
+    }
     if (t) {
       h += '<div class="sec"><b>Load</b><div>' + kv("first frame", secs(t.firstFrameMs)) + kv("first draw", secs(t.firstWebglDrawMs), t.firstWebglDrawMs > 4000 ? "warn" : "") + (t.navigation ? kv("load event", secs(t.navigation.loadEventMs)) : "") + kv("requests", t.resources.count) + kv("transfer", mb(t.resources.totalTransferKB)) + kv("decoded", mb(t.resources.totalDecodedKB)) +
         '<br>' + '<i class="muted">slowest</i> ' + t.resources.slowest.slice(0, 5).map(function (x) { return kv(x.name.split("/").pop(), secs(x.durationMs)); }).join("") +
@@ -709,7 +752,7 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   // ---- timeline graph ----
   var LANES = [
     { key: "fps", label: "FPS", color: "#3fcf8e", refs: [60, 30], floor: 60, zero: true, dec: 0, tone: function (v) { return v >= 55 ? "" : v >= 30 ? "warn" : "bad"; } },
-    { key: "worstMs", label: "Frame (worst)", unit: " ms", color: "#f2b84b", refs: [16.7, 33.3], floor: 33.3, cap: 120, zero: true, dec: 1, tone: function (v) { return v > 50 ? "bad" : v > 33.3 ? "warn" : ""; } },
+    { key: "worstMs", label: "Frame worst", unit: " ms", color: "#f2b84b", refs: [16.7, 33.3], floor: 33.3, cap: 120, zero: true, dec: 1, tone: function (v) { return v > 50 ? "bad" : v > 33.3 ? "warn" : ""; } },
     { key: "drawCalls", label: "Draw calls", color: "#7aa2ff", floor: 8, zero: true, dec: 0 },
     { key: "heapMB", label: "JS heap", unit: " MB", color: "#c58af9", zero: false, dec: 0, opt: true },
     { key: "eng.processMs", label: "Engine process", unit: " ms", color: "#ff8c69", refs: [16.7], floor: 16.7, cap: 120, zero: true, dec: 1, opt: true, tone: function (v) { return v > 16.7 ? "bad" : v > 8 ? "warn" : ""; } },
@@ -717,10 +760,31 @@ export function renderShell({ title, source, gameSrc, isolation }) {
     { key: "eng.renderMs", label: "Engine render", unit: " ms", color: "#ff9fb0", refs: [16.7], floor: 16.7, cap: 120, zero: true, dec: 1, opt: true },
     { key: "eng.scriptMs", label: "Engine script", unit: " ms", color: "#e0b86b", refs: [16.7], floor: 16.7, cap: 120, zero: true, dec: 1, opt: true },
     { key: "eng.entities", label: "Nodes", color: "#6bd6e0", zero: false, dec: 0, opt: true },
+    { key: "cpuMs", label: "Main thread", unit: " ms", color: "#f28b6b", refs: [16.7], floor: 16.7, cap: 120, zero: true, dec: 1, opt: true, tone: function (v) { return v > 16.7 ? "bad" : v > 10 ? "warn" : ""; } },
+    { key: "gpuMs", label: "GPU", unit: " ms", color: "#9b8cff", refs: [16.7], floor: 16.7, cap: 120, zero: true, dec: 1, opt: true, tone: function (v) { return v > 16.7 ? "bad" : v > 10 ? "warn" : ""; } },
+    { key: "inputMs", label: "Input lag", unit: " ms", color: "#5fd4c4", refs: [50], floor: 50, cap: 400, zero: true, dec: 1, opt: true, gaps: true, tone: function (v) { return v > 100 ? "bad" : v > 50 ? "warn" : ""; } },
+    { key: "progSwitches", label: "Programs/frame", color: "#8fa8ff", floor: 8, zero: true, dec: 0, opt: true, def: false },
+    { key: "texBinds", label: "Tex binds/frame", color: "#7fb8ff", floor: 8, zero: true, dec: 0, opt: true, def: false },
+    { key: "stateChanges", label: "GL state/frame", color: "#6f9cd8", floor: 8, zero: true, dec: 0, opt: true, def: false },
+    { key: "res.texMemMB", label: "Tex memory", unit: " MB", color: "#d9a3ff", zero: false, dec: 1, opt: true, def: false },
+    { key: "res.wasmMB", label: "wasm memory", unit: " MB", color: "#b58cff", zero: false, dec: 0, opt: true, def: false },
+    { key: "res.domNodes", label: "DOM nodes", color: "#9fb7c9", zero: false, dec: 0, opt: true, def: false },
   ];
   var TONE = { "": "#d7dae0", warn: "#f2b84b", bad: "#ff6b6b" };
-  var G = { win: 60000, hover: null, off: {}, raf: 0, ro: null };
-  try { var offSaved = JSON.parse(localStorage.getItem("gp.graphOff") || "{}"); if (offSaved && typeof offSaved === "object") G.off = offSaved; } catch (e) {}
+  var G = { win: 60000, hover: null, vis: {}, raf: 0, ro: null }; // vis: explicit per-lane visibility; lanes with def:false start hidden
+  try {
+    var visSaved = JSON.parse(localStorage.getItem("gp.graphVis") || "null");
+    if (visSaved && typeof visSaved === "object") G.vis = visSaved;
+    else { var offSaved = JSON.parse(localStorage.getItem("gp.graphOff") || "{}"); Object.keys(offSaved || {}).forEach(function (k) { G.vis[k] = 0; }); }
+  } catch (e) {}
+  function laneOn(l) { return l.key in G.vis ? !!G.vis[l.key] : l.def !== false; }
+  function resSample(m) {
+    var o = {}, em = m.webgl && m.webgl.estMemoryMB, mm = m.memory || {};
+    if (em) { o.texMemMB = em.textures; o.bufMemMB = em.buffers; }
+    if (typeof mm.wasmMemoryMB === "number") o.wasmMB = mm.wasmMemoryMB;
+    if (typeof mm.domNodes === "number") o.domNodes = mm.domNodes;
+    return o;
+  }
   function engineSample(gm, ent) {
     var o = {};
     ["processMs", "physicsMs", "renderMs", "scriptMs"].forEach(function (k) { if (typeof gm[k] === "number") o[k] = gm[k]; });
@@ -730,33 +794,35 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   function addMark(kind, name, t) { marks.push({ kind: kind, name: String(name || kind).slice(0, 40), t: t || Date.now() }); if (marks.length > 300) marks.shift(); if (perf.tab === "graph") scheduleGraph(); }
   function laneVal(smp, key) {
     if (key.indexOf("eng.") === 0) return smp.eng ? smp.eng[key.slice(4)] : null;
+    if (key.indexOf("res.") === 0) return smp.res ? smp.res[key.slice(4)] : null;
     return smp[key];
   }
   function laneHasData(l) { for (var i = hist.length - 1; i >= 0 && i >= hist.length - 600; i--) { var v = laneVal(hist[i], l.key); if (typeof v === "number") return true; } return false; }
-  function activeLanes() { return LANES.filter(function (l) { return !G.off[l.key] && (!l.opt || laneHasData(l)); }); }
+  function activeLanes() { return LANES.filter(function (l) { return laneOn(l) && (!l.opt || laneHasData(l)); }); }
   function fmtLane(l, v) { return v == null ? "–" : (l.dec ? v.toFixed(l.dec) : Math.round(v)) + (l.unit || ""); }
   function renderLaneChips() {
     var el = $("glanes"), h = "";
     LANES.forEach(function (l) {
       if (l.opt && !laneHasData(l)) return;
-      var on = !G.off[l.key];
+      var on = laneOn(l);
       h += '<button type="button" class="tog" data-lane="' + l.key + '" aria-pressed="' + on + '" title="' + (on ? "Hide" : "Show") + ' ' + esc(l.label) + '"><i' + (on ? ' style="background:' + l.color + '"' : "") + '></i>' + esc(l.label) + '</button>';
     });
     if (el.innerHTML !== h) el.innerHTML = h;
   }
   $("glanes").addEventListener("click", function (e) {
     var b = e.target.closest("[data-lane]"); if (!b) return;
-    var k = b.dataset.lane; if (G.off[k]) delete G.off[k]; else G.off[k] = 1;
-    try { localStorage.setItem("gp.graphOff", JSON.stringify(G.off)); } catch (err) {}
+    var k = b.dataset.lane, l = LANES.filter(function (x) { return x.key === k; })[0]; if (!l) return;
+    G.vis[k] = laneOn(l) ? 0 : 1;
+    try { localStorage.setItem("gp.graphVis", JSON.stringify(G.vis)); } catch (err) {}
     renderLaneChips(); scheduleGraph();
   });
   $("gwin").onchange = function () { G.win = Number($("gwin").value); scheduleGraph(); };
   $("gcsv").onclick = function () {
-    var cols = ["time", "fps", "worstMs", "drawCalls", "heapMB", "processMs", "physicsMs", "renderMs", "scriptMs", "entities"];
-    var lines = [cols.join(",")];
+    var cols = ["time", "fps", "worstMs", "cpuMs", "gpuMs", "inputMs", "drawCalls", "progSwitches", "texBinds", "fboBinds", "stateChanges", "heapMB", "texMemMB", "bufMemMB", "wasmMB", "domNodes", "processMs", "physicsMs", "renderMs", "scriptMs", "entities"];
+    var lines = [cols.join(",")], nz = function (v) { return v == null ? "" : v; };
     hist.forEach(function (s) {
-      var e = s.eng || {};
-      lines.push([new Date(s.t).toISOString(), s.fps, s.worstMs, s.drawCalls, s.heapMB == null ? "" : s.heapMB, e.processMs == null ? "" : e.processMs, e.physicsMs == null ? "" : e.physicsMs, e.renderMs == null ? "" : e.renderMs, e.scriptMs == null ? "" : e.scriptMs, e.entities == null ? "" : e.entities].join(","));
+      var e = s.eng || {}, r = s.res || {};
+      lines.push([new Date(s.t).toISOString(), s.fps, s.worstMs, nz(s.cpuMs), nz(s.gpuMs), nz(s.inputMs), s.drawCalls, nz(s.progSwitches), nz(s.texBinds), nz(s.fboBinds), nz(s.stateChanges), nz(s.heapMB), nz(r.texMemMB), nz(r.bufMemMB), nz(r.wasmMB), nz(r.domNodes), nz(e.processMs), nz(e.physicsMs), nz(e.renderMs), nz(e.scriptMs), nz(e.entities)].join(","));
     });
     var blob = new Blob([lines.join(String.fromCharCode(10))], { type: "text/csv" }), a = document.createElement("a");
     a.href = URL.createObjectURL(blob); a.download = "gamelab-timeline-" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".csv"; a.click();
@@ -766,7 +832,7 @@ export function renderShell({ title, source, gameSrc, isolation }) {
     o = o || {}; var win = o.windowMs || 60000, step = Math.max(1, o.step || 1), now = Date.now();
     var src = hist.filter(function (s) { return !win || now - s.t <= win; });
     var out = [];
-    for (var i = src.length - 1; i >= 0; i -= step) { var s = src[i]; out.unshift({ t: new Date(s.t).toISOString().slice(11, 23), ago: Math.round((now - s.t) / 100) / 10, fps: s.fps, worstMs: s.worstMs, drawCalls: s.drawCalls, heapMB: s.heapMB, engine: s.eng }); }
+    for (var i = src.length - 1; i >= 0; i -= step) { var s = src[i]; out.unshift({ t: new Date(s.t).toISOString().slice(11, 23), ago: Math.round((now - s.t) / 100) / 10, fps: s.fps, worstMs: s.worstMs, cpuMs: s.cpuMs, gpuMs: s.gpuMs, inputMs: s.inputMs, drawCalls: s.drawCalls, progSwitches: s.progSwitches, texBinds: s.texBinds, fboBinds: s.fboBinds, stateChanges: s.stateChanges, heapMB: s.heapMB, resources: s.res, engine: s.eng }); }
     var mk = marks.filter(function (m) { return !win || now - m.t <= win; }).map(function (m) { return { t: new Date(m.t).toISOString().slice(11, 23), ago: Math.round((now - m.t) / 100) / 10, kind: m.kind, name: m.name }; });
     return { samples: out, marks: mk.slice(-60), intervalMs: 500 * step, windowMs: win, total: hist.length };
   }
@@ -822,6 +888,8 @@ export function renderShell({ title, source, gameSrc, isolation }) {
         lastX = x; lastY = y;
       }
       ctx.strokeStyle = l.color; ctx.lineWidth = 1.5; ctx.lineJoin = "round"; ctx.stroke();
+      // sparse series (e.g. input latency only when the player pressed something): dot every sample so isolated points show
+      if (l.gaps) { ctx.fillStyle = l.color; for (var k4 = 0; k4 < vis.length; k4++) { var v4 = laneVal(vis[k4], l.key); if (typeof v4 === "number") { ctx.beginPath(); ctx.arc(X(vis[k4].t), Y(v4), 2, 0, Math.PI * 2); ctx.fill(); } } }
       // area fill (light) — same path, closed to the lane floor
       ctx.save(); ctx.globalAlpha = 0.09; ctx.fillStyle = l.color; ctx.beginPath(); path = false; var startX = null;
       for (var k3 = 0; k3 < vis.length; k3++) {
@@ -837,6 +905,7 @@ export function renderShell({ title, source, gameSrc, isolation }) {
       if (lastX != null && !hs) { ctx.fillStyle = l.color; ctx.beginPath(); ctx.arc(lastX, lastY, 2.5, 0, Math.PI * 2); ctx.fill(); }
       // legend: label + value (hover or latest)
       var cur = hs ? laneVal(hs, l.key) : (vis.length ? laneVal(vis[vis.length - 1], l.key) : null);
+      if (!hs && l.gaps && typeof cur !== "number") for (var k5 = vis.length - 1; k5 >= 0; k5--) { var v5 = laneVal(vis[k5], l.key); if (typeof v5 === "number") { cur = v5; break; } }
       if (hs && typeof cur === "number") { ctx.fillStyle = l.color; ctx.beginPath(); ctx.arc(X(hs.t), Y(cur), 3, 0, Math.PI * 2); ctx.fill(); }
       ctx.textAlign = "left"; ctx.fillStyle = l.color; ctx.font = "600 10.5px " + MONO; ctx.fillText(l.label, 8, top + 11);
       var lw = ctx.measureText(l.label).width;

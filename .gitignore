@@ -1,0 +1,5 @@
+node_modules/
+.gamelab/
+test-results/
+*.log
+.DS_Store

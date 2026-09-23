@@ -1,0 +1,45 @@
+{
+  "name": "gamelab",
+  "version": "0.1.0",
+  "description": "Harness-agnostic test lab for HTML5/WebGL games: serve builds or proxy dev servers with an instrumented hook, drive a Playwright Chromium (device emulation, touch, gamepad, throttling, traces), run scripted scenarios and export Playwright CI tests. Exposed as an MCP server, a CLI and a plain Node API.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "gamelab": "bin/gamelab.mjs"
+  },
+  "exports": {
+    ".": "./src/index.mjs",
+    "./tools": "./src/tools.mjs",
+    "./preview": "./src/preview.mjs",
+    "./lab": "./src/lab.mjs",
+    "./scenario": "./src/scenario.mjs",
+    "./export": "./src/export.mjs"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "mcp": "node bin/gamelab.mjs mcp",
+    "postinstall": "node -e \"process.env.GAMELAB_SKIP_BROWSER || require('child_process').spawnSync('npx', ['playwright', 'install', 'chromium'], { stdio: 'inherit', shell: process.platform === 'win32' })\""
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.1",
+    "playwright": "^1.63.0"
+  },
+  "keywords": [
+    "game",
+    "webgl",
+    "godot",
+    "unity",
+    "phaser",
+    "playwright",
+    "mcp",
+    "testing",
+    "profiling"
+  ]
+}

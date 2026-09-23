@@ -1,0 +1,165 @@
+// CLI: gamelab serve | run | export | mcp | tools | config
+import { readFile } from "node:fs/promises";
+import { parseArgs } from "node:util";
+import path from "node:path";
+import { createRequire } from "node:module";
+import { openPreview, GameLabError } from "./preview.mjs";
+import { TOOLS, callTool } from "./tools.mjs";
+
+const { version } = createRequire(import.meta.url)("../package.json");
+
+const HELP = `gamelab v${version} — test lab for HTML5/WebGL games (Godot, Unity, Phaser, PixiJS, Three.js …)
+
+Usage:
+  gamelab serve  [dir|url] [--isolation auto|on|off] [--port N] [--out DIR] [--no-watch]
+      Serve a build (or proxy a dev server) with the hook injected; prints the shell URL.
+  gamelab run    <scenario.json> [dir|url] [--device "iPhone 14"] [--landscape] [--cpu 4]
+                 [--network slow-3g] [--headless] [--width W --height H] [--video] [--har]
+                 [--trace] [--out DIR] [--json]
+      Open the game in a Playwright Chromium, run the scenario, print the report. Exit 1 on failure.
+  gamelab export <scenario.json> [dir|url] --out DIR [--device X] [--viewport WxH] [--port N] [--overwrite]
+      Write a standalone Playwright project replaying the scenario (for CI).
+  gamelab mcp    [--out DIR]
+      Run as an MCP server over stdio (for Claude Code, Cursor, Copilot CLI, Codex, Gemini CLI …).
+  gamelab tools
+      List the tool catalogue (names + descriptions).
+  gamelab config <claude|cursor|copilot|codex|gemini|vscode|generic> [--out DIR]
+      Print the MCP config snippet for an agent.
+
+Scenario file: {"name": "smoke", "steps": [{"do": "waitFor", "expr": "window.__gp.metrics().webgl.drawCallsTotal > 0"}, …]}
+Artifacts (screenshots, reports, traces, video) go to --out, $GAMELAB_OUT, or ./.gamelab.
+`;
+
+const OPTIONS = {
+    isolation: { type: "string" }, port: { type: "string" }, out: { type: "string" }, watch: { type: "boolean", default: true },
+    device: { type: "string" }, landscape: { type: "boolean" }, cpu: { type: "string" }, network: { type: "string" },
+    headless: { type: "boolean" }, width: { type: "string" }, height: { type: "string" }, video: { type: "boolean" }, har: { type: "boolean" },
+    trace: { type: "boolean" }, json: { type: "boolean" }, viewport: { type: "string" }, overwrite: { type: "boolean" },
+    help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "v" },
+};
+
+const isUrl = (s) => /^https?:\/\//.test(s ?? "");
+const sourceInput = (s) => (s ? (isUrl(s) ? { url: s } : { dir: s }) : {});
+const outDir = (v) => path.resolve(v ?? process.env.GAMELAB_OUT ?? path.join(process.cwd(), ".gamelab"));
+const stderr = (m) => process.stderr.write(m + "\n");
+
+async function readScenario(file) {
+    if (!file) throw new GameLabError("usage", "Missing <scenario.json>");
+    const s = JSON.parse(await readFile(file, "utf8"));
+    if (!Array.isArray(s.steps) || !s.steps.length) throw new GameLabError("bad_scenario", `${file}: expected {"steps": [...]}`);
+    s.name ??= path.basename(file, ".json");
+    return s;
+}
+
+function keepAlive(preview) {
+    const stop = async () => { await preview.close(); process.exit(0); };
+    process.on("SIGINT", stop);
+    process.on("SIGTERM", stop);
+    return new Promise(() => {});
+}
+
+export async function main(argv = process.argv.slice(2)) {
+    const { values: o, positionals } = parseArgs({ args: argv, options: OPTIONS, allowPositionals: true, allowNegative: true });
+    const [cmd, ...rest] = positionals;
+    if (o.version) return console.log(version);
+    if (o.help || !cmd) return console.log(HELP);
+
+    const common = { cwd: process.cwd(), filesDir: outDir(o.out), log: stderr, defaultTarget: "auto" };
+
+    switch (cmd) {
+        case "serve": {
+            const p = await openPreview({ ...sourceInput(rest[0]), isolation: o.isolation, watch: o.watch }, { ...common, port: o.port ? Number(o.port) : 0 });
+            console.log(`Shell:  ${p.shellUrl}\nGame:   ${p.gameUrl}\nSource: ${p.source}${p.ui.isolation ? "  (COOP/COEP on)" : ""}\nCtrl-C to stop.`);
+            return keepAlive(p);
+        }
+
+        case "run": {
+            const scenario = await readScenario(rest[0]);
+            const p = await openPreview({ ...sourceInput(rest[1]), watch: false }, common);
+            let code = 1;
+            try {
+                await callTool(p, "lab_open", {
+                    device: o.device, landscape: o.landscape, headless: o.headless, video: o.video, har: o.har,
+                    cpu: o.cpu ? Number(o.cpu) : undefined, network: o.network,
+                    width: o.width ? Number(o.width) : undefined, height: o.height ? Number(o.height) : undefined,
+                });
+                if (o.trace) await callTool(p, "trace_start", { kind: "chrome", name: scenario.name });
+                const report = await callTool(p, "run_scenario", { ...scenario, target: "lab" });
+                const trace = o.trace ? await callTool(p, "trace_stop", { kind: "chrome" }) : undefined;
+                const artifacts = await callTool(p, "lab_close");
+                if (o.json) console.log(JSON.stringify({ report, trace, artifacts }, null, 2));
+                else printReport(report, trace, artifacts);
+                code = report.passed ? 0 : 1;
+            } finally {
+                await p.close();
+            }
+            process.exitCode = code;
+            return;
+        }
+
+        case "export": {
+            const scenario = await readScenario(rest[0]);
+            if (!o.out) throw new GameLabError("usage", "export needs --out DIR");
+            const p = await openPreview({ ...sourceInput(rest[1]), watch: false }, common);
+            try {
+                const r = await callTool(p, "export_test", { ...scenario, outDir: o.out, device: o.device, viewport: o.viewport, port: o.port ? Number(o.port) : undefined, overwrite: o.overwrite });
+                console.log(JSON.stringify(r, null, 2));
+            } finally { await p.close(); }
+            return;
+        }
+
+        case "mcp": {
+            const { startMcpServer } = await import("./mcp.mjs");
+            return startMcpServer({ filesDir: outDir(o.out), cwd: process.cwd(), log: stderr });
+        }
+
+        case "tools":
+            for (const t of [{ name: "open", description: "(mcp) Open a preview from dir/url." }, { name: "close", description: "(mcp) Close a preview." }, { name: "list", description: "(mcp) List previews." }, ...TOOLS]) {
+                console.log(`${t.name.padEnd(20)} ${t.description.split(/(?<=\.)\s/)[0]}`);
+            }
+            return;
+
+        case "config":
+            return console.log(configSnippet(rest[0] ?? "generic", o.out));
+
+        default:
+            throw new GameLabError("usage", `Unknown command "${cmd}". Run gamelab --help.`);
+    }
+}
+
+function printReport(report, trace, artifacts) {
+    const mark = (ok) => (ok ? "✓" : "✗");
+    const brief = (r) => (r && typeof r === "object" ? Object.entries(r).filter(([k]) => k !== "hint").map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : v}`).join(" ").slice(0, 90) : "");
+    console.log(`${mark(report.passed)} ${report.name}: ${report.summary?.passed ?? "?"}/${report.summary?.steps ?? "?"} steps passed in ${Math.round(report.durationMs ?? 0)} ms  (${report.target})`);
+    for (const s of report.steps ?? []) {
+        console.log(`  ${s.skipped ? "·" : mark(s.ok)} ${String(s.index ?? "").padStart(2)} ${s.do.padEnd(16)} ${s.skipped ? "skipped" : brief(s.result)}${s.error ? `  — ${s.error}` : ""}`);
+    }
+    if (report.reportPath) console.log(`  report: ${report.reportPath}`);
+    if (trace?.summary) {
+        const t = trace.summary;
+        console.log(`  trace:  ${trace.path}\n          ${Math.round(t.wallMs)} ms, ~${t.approxFps ?? "?"} fps, ${t.longTasks?.count ?? 0} long tasks (worst ${Math.round(t.longTasks?.worst?.[0]?.durMs ?? 0)} ms), GC ${Math.round(t.gcMs ?? 0)} ms`);
+    }
+    for (const a of artifacts?.artifacts ?? []) if (a.kind !== "chrome-trace") console.log(`  ${a.kind}: ${a.path}`);
+}
+
+export function configSnippet(agent, out) {
+    const args = ["-y", "gamelab", "mcp", ...(out ? ["--out", out] : [])];
+    const server = { command: "npx", args };
+    const json = (root) => JSON.stringify(root, null, 2);
+    switch (agent) {
+        case "claude":
+            return `# Claude Code — run:\nclaude mcp add gamelab -- npx ${args.join(" ")}\n\n# or in .mcp.json:\n${json({ mcpServers: { gamelab: server } })}`;
+        case "cursor":
+            return `# Cursor — .cursor/mcp.json (project) or ~/.cursor/mcp.json (global):\n${json({ mcpServers: { gamelab: server } })}`;
+        case "copilot":
+            return `# GitHub Copilot CLI — ~/.copilot/mcp-config.json (or .github/copilot/mcp.json in a repo):\n${json({ mcpServers: { gamelab: { type: "local", command: "npx", args, tools: ["*"] } } })}`;
+        case "vscode":
+            return `# VS Code — .vscode/mcp.json:\n${json({ servers: { gamelab: { type: "stdio", command: "npx", args } } })}`;
+        case "codex":
+            return `# OpenAI Codex CLI — ~/.codex/config.toml:\n[mcp_servers.gamelab]\ncommand = "npx"\nargs = ${JSON.stringify(args)}`;
+        case "gemini":
+            return `# Gemini CLI — ~/.gemini/settings.json:\n${json({ mcpServers: { gamelab: server } })}`;
+        default:
+            return `# Generic MCP (stdio):\n${json({ mcpServers: { gamelab: server } })}\n\n# From a local checkout instead of npx: {"command": "node", "args": ["${path.resolve(import.meta.dirname, "../bin/gamelab.mjs")}", "mcp"]}`;
+    }
+}

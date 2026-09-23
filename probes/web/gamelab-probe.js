@@ -15,7 +15,7 @@
  * Anything else is shown as-is.
  *
  * Usage (Phaser / PixiJS / Three.js / vanilla):
- *   import GameLabProbe from "gamelab/probes/web/gamelab-probe.js";  // bundlers (UMD) — or <script src=…> → window.GameLabProbe
+ *   import GameLabProbe from "@muqecha/gamelab/probes/web/gamelab-probe.js";  // bundlers (UMD) — or <script src=…> → window.GameLabProbe
  *   const { installProbe } = GameLabProbe;
  *   const probe = installProbe({
  *     engine: "phaser", version: Phaser.VERSION,

@@ -209,7 +209,7 @@ export const GUIDE = [
     },
     {
         id: "game", title: "Game probe (engine numbers)", perf: "Game",
-        summary: "Optional: games that ship a gamelab probe expose window.__game with engine internals, state and commands. Probes for Godot (probes/godot/gamelab_probe.gd), Unity (probes/unity/GameLabProbe.cs) and plain JS (probes/web/gamelab-probe.js) are in the gamelab package.",
+        summary: "Optional: games that ship a gamelab probe expose window.__game with engine internals, state and commands. Probes for Godot (probes/godot/gamelab_probe.gd), Unity (probes/unity/GameLabProbe.cs) and plain JS (probes/web/gamelab-probe.js) are in the @muqecha/gamelab package.",
         items: [
             ["engine, commands", "Engine name and version; whether command(name, args) is wired so an agent can drive the game (start_race, set_time_scale, …)."],
             ["State", "Whatever the game reports: scene, phase, player position, lap, …"],

@@ -739,7 +739,7 @@ export function renderShell({ title, source, gameSrc, isolation, mode }) {
       if (t.resources.totalDecodedKB > 60000) add("info", "Total assets " + mb(t.resources.totalDecodedKB) + " over " + t.resources.count + " requests.");
     }
     var g = m.game;
-    if (!g || !g.present) add("info", "No game probe: the page has no window.__game, so scene/phase, engine timings and events are unknown. Add gamelab/probes (Godot autoload, Unity .jslib, or web) to get them.");
+    if (!g || !g.present) add("info", "No game probe: the page has no window.__game, so scene/phase, engine timings and events are unknown. Add @muqecha/gamelab/probes (Godot autoload, Unity .jslib, or web) to get them.");
     else {
       var gm = g.metrics && !g.metrics.__error && !g.metrics.__pending ? g.metrics : null;
       if (gm && gameplay) {

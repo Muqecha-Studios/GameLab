@@ -217,7 +217,7 @@ function printReport(report, trace, artifacts) {
 }
 
 export function configSnippet(agent, out) {
-    const args = ["-y", "gamelab", "mcp", ...(out ? ["--out", out] : [])];
+    const args = ["-y", "@muqecha/gamelab", "mcp", ...(out ? ["--out", out] : [])];
     const server = { command: "npx", args };
     const json = (root) => JSON.stringify(root, null, 2);
     switch (agent) {

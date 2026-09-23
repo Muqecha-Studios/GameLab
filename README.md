@@ -31,7 +31,7 @@ It serves your build (or proxies your dev server) with an instrumented hook, dri
 ## Install
 
 ```sh
-npm i -g gamelab          # or run ad hoc with: npx gamelab …
+npm i -g @muqecha/gamelab   # or run ad hoc with: npx @muqecha/gamelab …
 ```
 
 Needs Node ≥ 20. `postinstall` downloads Playwright's Chromium (set `GAMELAB_SKIP_BROWSER=1` to skip).
@@ -48,7 +48,7 @@ gamelab config vscode | codex | gemini | generic
 The generic form:
 
 ```json
-{ "mcpServers": { "gamelab": { "command": "npx", "args": ["-y", "gamelab", "mcp"] } } }
+{ "mcpServers": { "gamelab": { "command": "npx", "args": ["-y", "@muqecha/gamelab", "mcp"] } } }
 ```
 
 Then tell the agent, e.g. *"open the Godot export in builds/web, run it on an iPhone 14 with 4× CPU throttle, and tell me the frame-time p95 and any hitches"*. The agent will call:
@@ -101,7 +101,7 @@ cd tests/web && npm i && npx playwright test --update-snapshots
 ## Use it from Node
 
 ```js
-import { openPreview, callTool } from "gamelab";
+import { openPreview, callTool } from "@muqecha/gamelab";
 
 const p = await openPreview({ dir: "builds/web" }, { filesDir: ".gamelab" });
 await callTool(p, "lab_open", { device: "Pixel 7", cpu: 4 });
@@ -110,7 +110,7 @@ const metrics = await callTool(p, "get_metrics");
 await p.close();
 ```
 
-`TOOLS` (from `gamelab/tools`) is the catalogue — `{ name, description, inputSchema, handler(preview, input) }` — so any host can map it onto its own surface in a few lines. The Copilot canvas adapter is ~80 lines.
+`TOOLS` (from `@muqecha/gamelab/tools`) is the catalogue — `{ name, description, inputSchema, handler(preview, input) }` — so any host can map it onto its own surface in a few lines. The Copilot canvas adapter is ~80 lines.
 
 ## Instrument your game (optional, recommended)
 

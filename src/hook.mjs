@@ -182,6 +182,42 @@ export const HOOK_JS = String.raw`(() => {
   }
   requestAnimationFrame(tick);
 
+  // ---- game probe (window.__game — see probes/) ---------------------------
+  const GAME_EVENTS_MAX = 200;
+  const gameEvents = [];            // { name, data, at }
+  let gameEventsTotal = 0;
+  window.addEventListener("gamelab", (e) => {
+    const d = e.detail || {};
+    if (d.type && d.type !== "event") return;
+    gameEvents.push({ name: String(d.name ?? "event"), data: d.data ?? null, at: Math.round(d.t ?? performance.now()) });
+    gameEventsTotal++;
+    if (gameEvents.length > GAME_EVENTS_MAX) gameEvents.shift();
+    post({ type: "game_event", name: String(d.name ?? "event"), data: d.data ?? null, at: Math.round(d.t ?? performance.now()) });
+  });
+  const isThenable = (v) => v && typeof v.then === "function";
+  const safeCallSync = (fn) => { try { if (typeof fn !== "function") return undefined; const v = fn(); return isThenable(v) ? { __pending: true } : v; } catch (e) { return { __error: String(e && e.message || e) }; } };
+  const safeCall = async (fn) => { try { return typeof fn === "function" ? await fn() : undefined; } catch (e) { return { __error: String(e && e.message || e) }; } };
+  const NO_PROBE = "No game probe: the page has no window.__game. See gamelab probes/ (Godot autoload, Unity .jslib, web) to expose state, engine timings, marks and events.";
+  function gameSnapshotSync() {
+    const g = window.__game;
+    if (!g) return { present: false };
+    return { present: true, engine: g.engine ?? null, version: g.version ?? null, state: safeCallSync(g.state), metrics: safeCallSync(g.metrics), hasCommands: typeof g.command === "function" };
+  }
+  async function gameSnapshot(withEvents) {
+    const g = window.__game;
+    if (!g) return { present: false, hint: NO_PROBE };
+    const out = { present: true, engine: g.engine ?? null, version: g.version ?? null, state: await safeCall(g.state), metrics: await safeCall(g.metrics), hasCommands: typeof g.command === "function" };
+    if (withEvents) out.events = { total: gameEventsTotal, recent: gameEvents.slice(-50) };
+    return out;
+  }
+  async function gameCommand(name, args) {
+    const g = window.__game;
+    if (!g) throw new Error("No game probe (window.__game) on this page");
+    if (typeof g.command !== "function") throw new Error("The game probe has no command handler");
+    const r = await g.command(name, args ?? null);
+    return { name, result: r === undefined ? null : r };
+  }
+
   function percentile(arr, p) {
     if (!arr.length) return null;
     const s = arr.slice().sort((a, b) => a - b);
@@ -190,12 +226,14 @@ export const HOOK_JS = String.raw`(() => {
   function metrics() {
     const wasm = performance.getEntriesByType("resource").filter((r) => /\.wasm(\?|$)/.test(r.name));
     return {
+      game: gameSnapshotSync(),
       frame: { lastDrawCalls: lastFrameDraws, p50Ms: percentile(frameTimes, 0.5), p95Ms: percentile(frameTimes, 0.95), p99Ms: percentile(frameTimes, 0.99), maxMs: percentile(frameTimes, 1), samples: frameTimes.length },
       hitches: { count: hitches.length, thresholdMs: HITCH_MS, recent: hitches.slice(-20) },
       webgl: { drawCallsTotal: gl.draws, instancesTotal: gl.instances, textureUploads: gl.texUploads, shaderCompiles: gl.shaderCompiles, programLinks: gl.programLinks, bufferUploads: gl.bufferUploads, contextLostCount: gl.contextLost, contexts: glContexts.size },
       memory: { heapMB: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null, heapLimitMB: performance.memory ? Math.round(performance.memory.jsHeapSizeLimit / 1048576) : null, wasmBytes: wasm.reduce((a, r) => a + (r.decodedBodySize || 0), 0) || null },
       visibility: document.visibilityState,
       uptimeMs: Math.round(performance.now()),
+      gameEvents: { total: gameEventsTotal, recent: gameEvents.slice(-10) },
     };
   }
   function loadTimeline() {
@@ -219,6 +257,9 @@ export const HOOK_JS = String.raw`(() => {
     metrics: metrics,
     loadTimeline: loadTimeline,
     hitches: () => hitches.slice(),
+    gameState: () => gameSnapshot(true),
+    gameCommand: gameCommand,
+    gameEvents: () => gameEvents.slice(),
     resetHitches: () => { hitches.length = 0; frameTimes.length = 0; },
     setVisibility: (hidden) => { forcedHidden = hidden === null ? null : !!hidden; document.dispatchEvent(new Event("visibilitychange")); window.dispatchEvent(new Event(forcedHidden ? "blur" : "focus")); return document.visibilityState; },
     loseContext: async (restoreAfterMs) => {
@@ -364,6 +405,8 @@ export const HOOK_JS = String.raw`(() => {
       case "load_timeline": return loadTimeline();
       case "reset_hitches": window.__gp.resetHitches(); return { ok: true };
       case "profile": return profile(cmd.durationMs);
+      case "game_state": return gameSnapshot(true);
+      case "game_command": return gameCommand(cmd.name, cmd.args);
       case "visibility": return { visibilityState: window.__gp.setVisibility(cmd.hidden === undefined ? null : cmd.hidden) };
       case "lose_context": return window.__gp.loseContext(cmd.restoreAfterMs);
       default:

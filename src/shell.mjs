@@ -295,8 +295,8 @@ export function renderShell({ title, source, gameSrc, isolation }) {
       game.contentWindow.postMessage(Object.assign({ __gp: 1, type: "cmd", id: id, kind: kind }, extra || {}), "*");
     });
   }
-  var perf = { tab: "console", timer: null, prevM: null, prevT: 0, rates: {}, heapHist: [], timeline: null, lastM: null, profile: null, profiling: false, shaderBase: null, shaderBaseAt: 0 };
-  function perfReset() { perf.prevM = null; perf.rates = {}; perf.heapHist = []; perf.timeline = null; perf.lastM = null; perf.profile = null; perf.shaderBase = null; }
+  var perf = { tab: "console", timer: null, prevM: null, prevT: 0, rates: {}, heapHist: [], timeline: null, lastM: null, profile: null, profiling: false, shaderBase: null, shaderBaseAt: 0, events: [], nodeHist: [] };
+  function perfReset() { perf.prevM = null; perf.rates = {}; perf.heapHist = []; perf.timeline = null; perf.lastM = null; perf.profile = null; perf.shaderBase = null; perf.events = []; perf.nodeHist = []; }
   function setTab(t) {
     perf.tab = t;
     Array.prototype.forEach.call(document.querySelectorAll("#dbar .tab"), function (b) { b.classList.toggle("on", b.dataset.tab === t); });
@@ -319,6 +319,9 @@ export function renderShell({ title, source, gameSrc, isolation }) {
       }
       perf.prevM = m; perf.prevT = now; perf.lastM = m;
       if (perf.shaderBase === null && m.uptimeMs > 10000) { perf.shaderBase = m.webgl.shaderCompiles; perf.shaderBaseAt = m.uptimeMs; }
+      var gm = m.game && m.game.present && m.game.metrics && !m.game.metrics.__error && !m.game.metrics.__pending ? m.game.metrics : null;
+      var ent = gm ? (gm.nodes != null ? gm.nodes : gm.entities != null ? gm.entities : gm.objects) : null;
+      if (typeof ent === "number") { perf.nodeHist.push({ t: now, n: ent }); while (perf.nodeHist.length && now - perf.nodeHist[0].t > 60000) perf.nodeHist.shift(); }
       if (m.memory && m.memory.heapMB != null) { perf.heapHist.push({ t: now, mb: m.memory.heapMB }); while (perf.heapHist.length && now - perf.heapHist[0].t > 60000) perf.heapHist.shift(); }
       if (!perf.timeline || (perf.timeline.firstWebglDrawMs === null && m.uptimeMs < 60000)) askGame("load_timeline").then(function (t) { perf.timeline = t; renderPerf(); }).catch(function () {});
       renderPerf();
@@ -363,6 +366,27 @@ export function renderShell({ title, source, gameSrc, isolation }) {
       if (wasm && wasm.decodedKB > 25000) add("info", "wasm is " + mb(wasm.decodedKB) + " — for Godot, strip unused modules in a custom export template; for Unity, enable code stripping + Brotli.");
       if (t.resources.totalDecodedKB > 60000) add("info", "Total assets " + mb(t.resources.totalDecodedKB) + " over " + t.resources.count + " requests.");
     }
+    var g = m.game;
+    if (!g || !g.present) add("info", "No game probe: the page has no window.__game, so scene/phase, engine timings and events are unknown. Add gamelab/probes (Godot autoload, Unity .jslib, or web) to get them.");
+    else {
+      var gm = g.metrics && !g.metrics.__error && !g.metrics.__pending ? g.metrics : null;
+      if (gm && gameplay) {
+        var budget = 16.7;
+        if (typeof gm.physicsMs === "number" && gm.physicsMs > budget * 0.4) add(gm.physicsMs > budget * 0.7 ? "bad" : "warn", "Physics takes " + gm.physicsMs + " ms/frame (" + Math.round(gm.physicsMs / budget * 100) + "% of the 60 fps budget)" + (gm.physics3dPairs > 500 || gm.physics2dPairs > 500 ? " with " + (gm.physics3dPairs || gm.physics2dPairs) + " collision pairs — simplify colliders / use layers." : " — lower the physics tick rate or simplify colliders."));
+        if (typeof gm.processMs === "number" && gm.processMs > budget * 0.5) add(gm.processMs > budget ? "bad" : "warn", "Script/process time " + gm.processMs + " ms/frame (" + Math.round(gm.processMs / budget * 100) + "% of budget) — profile to see which _process/Update is hot.");
+        if (typeof gm.gcAllocKB === "number" && gm.gcAllocKB > 16) add("warn", "Allocating " + gm.gcAllocKB + " KB per frame on the managed heap — GC spikes ahead; pool objects, avoid LINQ/closures in Update.");
+        if (typeof gm.orphanNodes === "number" && gm.orphanNodes > 0) add("warn", gm.orphanNodes + " orphan node" + (gm.orphanNodes > 1 ? "s" : "") + " (removed from the tree but not freed) — call queue_free(), this is a leak.");
+        if (typeof gm.drawCalls === "number" && gm.drawCalls > 800) add("warn", "Engine reports " + gm.drawCalls + " draw calls/frame — batch, instance or merge meshes.");
+        if (typeof gm.setPassCalls === "number" && gm.setPassCalls > 150) add("warn", gm.setPassCalls + " SetPass calls/frame — too many distinct materials/shader variants; share materials or use the SRP Batcher.");
+        if (typeof gm.textureMB === "number" && gm.textureMB > 512) add("warn", "Texture memory " + gm.textureMB + " MB — mobile browsers cap WebGL memory; compress (KTX2/Basis) or downscale.");
+        if (perf.nodeHist.length > 10) {
+          var a0 = perf.nodeHist[0], a1 = perf.nodeHist[perf.nodeHist.length - 1], spanS = (a1.t - a0.t) / 1000;
+          if (spanS > 30 && a1.n - a0.n > 200) add("warn", "Node/entity count grew " + a0.n + " → " + a1.n + " in " + Math.round(spanS) + " s without coming back — spawner without despawn?");
+        }
+      }
+      if (g.state && g.state.__error) add("warn", "window.__game.state() threw: " + g.state.__error);
+      if (gm === null && g.metrics && g.metrics.__error) add("warn", "window.__game.metrics() threw: " + g.metrics.__error);
+    }
     if (env && !env.crossOriginIsolated && env.hardwareConcurrency > 1) add("info", "Not cross-origin isolated: no SharedArrayBuffer/threads (needed for Godot thread-enabled exports & Unity multithreading). Toggle 'isolated' to test.");
     if (perf.profile && perf.profile.supported) {
       var hot = perf.profile.hotFunctions[0];
@@ -391,12 +415,44 @@ export function renderShell({ title, source, gameSrc, isolation }) {
         '<br>' + '<i class="muted">largest</i> ' + t.resources.largest.slice(0, 5).map(function (x) { return kv(x.name.split("/").pop(), mb(x.decodedKB)); }).join("") +
         (t.userMarks.length ? '<br><i class="muted">marks</i> ' + t.userMarks.slice(0, 10).map(function (x) { return kv(x.name, secs(x.atMs)); }).join("") : "") + '</div></div>';
     }
+    h += renderGame(m.game);
     var fs = findings(m);
     h += '<div class="sec" id="findings"><b>Findings</b><div>' + (fs.length ? '<ul>' + fs.map(function (x) { return '<li class="' + x.cls + '">' + esc(x.text) + '</li>'; }).join("") + '</ul>' : '<span class="muted">Collecting…</span>') + '</div></div>';
     if (perf.profile) h += renderProfile(perf.profile);
     else h += '<div class="sec"><b>Profile</b><div class="muted">Press ● Profile while playing to sample the main thread and list the hottest functions (Chromium; JS Self-Profiling API).' + (perf.profiling ? " Sampling…" : "") + '</div></div>';
     $("perfbody").innerHTML = h;
     $("perfhint").textContent = perf.profiling ? "profiling…" : "";
+  }
+  var BUDGET_KEYS = { processMs: 1, physicsMs: 1, renderMs: 1, scriptMs: 1, navigationMs: 1, frameMs: 1 };
+  function fmtVal(v) {
+    if (v == null) return "–";
+    if (typeof v === "number") return Number.isInteger(v) ? String(v) : String(Math.round(v * 100) / 100);
+    if (typeof v === "object") { var j = JSON.stringify(v); return j.length > 60 ? j.slice(0, 57) + "…" : j; }
+    return String(v);
+  }
+  function renderGame(g) {
+    if (!g || !g.present) return '<div class="sec"><b>Game</b><div class="muted">No probe (window.__game). Drop in <code>probes/godot/gamelab_probe.gd</code>, <code>probes/unity/GameLabProbe.cs</code> or <code>probes/web/gamelab-probe.js</code> to see scene/phase, engine timings and events here.</div></div>';
+    var h = '<div class="sec"><b>Game</b><div>' + kv("engine", (g.engine || "?") + (g.version ? " " + g.version : "")) + (g.hasCommands ? kv("commands", "yes", "", "window.__game.command(name, args) is wired") : kv("commands", "none")) + '</div></div>';
+    var st = g.state;
+    if (st && typeof st === "object" && !st.__error && !st.__pending) {
+      var keys = Object.keys(st);
+      h += '<div class="sec"><b>State</b><div>' + (keys.length ? keys.slice(0, 24).map(function (k) { return kv(k, fmtVal(st[k]), "", typeof st[k] === "object" ? JSON.stringify(st[k]) : ""); }).join("") : '<span class="muted">state() returned {}</span>') + '</div></div>';
+    } else if (st && st.__error) h += '<div class="sec"><b>State</b><div class="warn">state() threw: ' + esc(st.__error) + '</div></div>';
+    var gm = g.metrics;
+    if (gm && typeof gm === "object" && !gm.__error && !gm.__pending) {
+      var parts = [], custom = null;
+      Object.keys(gm).forEach(function (k) {
+        if (k === "custom" && gm[k] && typeof gm[k] === "object") { custom = gm[k]; return; }
+        var v = gm[k], cls = "";
+        if (BUDGET_KEYS[k] && typeof v === "number") cls = v > 16.7 * 0.7 ? "bad" : v > 16.7 * 0.4 ? "warn" : "";
+        if (k === "orphanNodes" && v > 0) cls = "warn";
+        if (k === "gcAllocKB" && v > 16) cls = "warn";
+        parts.push(kv(k, fmtVal(v) + (BUDGET_KEYS[k] ? " ms" : ""), cls));
+      });
+      h += '<div class="sec"><b>Engine</b><div>' + parts.join("") + (custom ? '<br><i class="muted">custom</i> ' + Object.keys(custom).map(function (k) { return kv(k, fmtVal(custom[k])); }).join("") : "") + '</div></div>';
+    }
+    if (perf.events.length) h += '<div class="sec"><b>Events</b><div>' + perf.events.slice(-12).map(function (e) { return kv("@" + secs(e.at), e.name + (e.data != null ? " " + fmtVal(e.data) : ""), "", e.data != null ? JSON.stringify(e.data) : ""); }).join("") + '</div></div>';
+    return h;
   }
   function renderProfile(p) {
     if (!p.supported) return '<div class="sec"><b>Profile</b><div class="warn">' + esc(p.reason) + '</div></div>';
@@ -428,6 +484,7 @@ export function renderShell({ title, source, gameSrc, isolation }) {
       addLog({ level: "sys", text: "— page loaded " + new Date().toLocaleTimeString() + (env.crossOriginIsolated ? " · isolated" : "") + " —", t: Date.now() });
     } else if (m.type === "console") addLog({ level: m.level, text: m.text, stack: m.stack, t: m.t });
     else if (m.type === "fps") onFps(m);
+    else if (m.type === "game_event") { perf.events.push(m); if (perf.events.length > 30) perf.events.shift(); addLog({ level: "log", text: "\u25c6 " + m.name + (m.data != null ? " " + JSON.stringify(m.data) : ""), t: Date.now() }); if (perf.tab === "perf") renderPerf(); }
     else if (m.type === "result") {
       var local = uiPending[m.id];
       if (local) { delete uiPending[m.id]; clearTimeout(local.timer); m.ok ? local.resolve(m.value) : local.reject(new Error(m.error || "failed")); }

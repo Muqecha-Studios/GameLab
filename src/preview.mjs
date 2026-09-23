@@ -320,6 +320,8 @@ export class Preview {
             visibility: (hidden) => game({ kind: "visibility", hidden }),
             loseContext: (ms) => game({ kind: "lose_context", restoreAfterMs: ms }, (ms ?? 0) + CMD_TIMEOUT_MS),
             profile: (ms) => game({ kind: "profile", durationMs: ms }, (ms ?? 5000) + CMD_TIMEOUT_MS),
+            gameState: () => game({ kind: "game_state" }),
+            gameCommand: (name, args) => game({ kind: "game_command", name, args }),
             reload: () => this.command("shell", { kind: "reload" }),
         };
     }
@@ -345,6 +347,8 @@ export class Preview {
             visibility: w((hidden) => lab.setVisibility(hidden)),
             loseContext: w((ms) => lab.hookCall(`window.__gp.loseContext(${ms ?? "null"})`)),
             profile: w((ms) => lab.hookCall(`window.__gp.profile(${ms ?? 5000})`)),
+            gameState: w(() => lab.hookCall("window.__gp.gameState()")),
+            gameCommand: w((name, args) => lab.hookCall(`window.__gp.gameCommand(${JSON.stringify(name)}, ${JSON.stringify(args ?? null)})`)),
             reload: w(() => lab.reload()),
             throttle: w((o) => lab.setThrottle(o)),
         };

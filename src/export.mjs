@@ -55,6 +55,8 @@ export async function exportTest({ scenario, outDir, mode, dir, entry, url, isol
     };
 }
 
+const STATE_CODE = (expr) => `await (async () => { const g = await window.__gp.gameState(); if (!g.present) throw new Error("no game probe"); const state = g.state ?? {}, metrics = g.metrics ?? {}, events = g.events?.recent ?? []; return (${expr}\n); })()`;
+
 function renderSpec({ name, scenario, gamePath, usesTouch, usesGamepad, usesCdp }) {
     const lines = [];
     const L = (s = "") => lines.push(s ? "    " + s : "");
@@ -89,6 +91,14 @@ function renderSpec({ name, scenario, gamePath, usesTouch, usesGamepad, usesCdp 
                 }
                 break;
             case "eval": L(`await evalGame(page, ${q(s.code)});`); break;
+            case "waitForState": L(`await page.waitForFunction(${q(`(async () => { try { return ${STATE_CODE(s.expr)} } catch { return false; } })()`)}, undefined, { timeout: ${s.timeoutMs ?? 10000}, polling: ${s.intervalMs ?? 100} });`); break;
+            case "assertState": L(`expect(await evalGame(page, ${q(STATE_CODE(s.expr))}), ${q(s.message || `assertState: ${s.expr}`)}).toBeTruthy();`); break;
+            case "gameCommand": L(`await evalGame(page, ${q(`window.__gp.gameCommand(${JSON.stringify(s.name)}, ${JSON.stringify(s.args ?? null)})`)});`); break;
+            case "waitForEvent":
+                L(`{ const since = (await evalGame(page, "(await window.__gp.gameState()).events.total")) as number;`);
+                L(`  await page.waitForFunction(([n, since]) => (window as any).__gp.gameState().then((g: any) => g.events.recent.slice(Math.max(0, g.events.recent.length - (g.events.total - since))).some((e: any) => e.name === n)), [${q(s.event)}, since] as const, { timeout: ${s.timeoutMs ?? 10000}, polling: ${s.intervalMs ?? 100} });`);
+                L(`}`);
+                break;
             case "assert": L(`expect(await evalGame(page, ${q(s.expr)}), ${q(s.message || `assert: ${s.expr}`)}).toBeTruthy();`); break;
             case "expectFps": L(`expect(await fpsOver(page, ${s.sampleMs ?? 2000}), "average fps").toBeGreaterThanOrEqual(${s.min});`); break;
             case "expectNoErrors": L(`expect(errors, "console errors").toEqual([]);`); break;

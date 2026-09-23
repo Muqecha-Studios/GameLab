@@ -5,7 +5,7 @@
 import path from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
 
-export const STEP_KINDS = ["wait", "waitFor", "key", "click", "tap", "swipe", "gamepad", "eval", "assert", "expectFps", "expectNoErrors", "expectNoHitches", "screenshot", "reload", "throttle", "visibility", "loseContext", "reset"];
+export const STEP_KINDS = ["wait", "waitFor", "waitForState", "assertState", "gameCommand", "waitForEvent", "key", "click", "tap", "swipe", "gamepad", "eval", "assert", "expectFps", "expectNoErrors", "expectNoHitches", "screenshot", "reload", "throttle", "visibility", "loseContext", "reset"];
 const LAB_ONLY = new Set(["tap", "swipe", "gamepad", "throttle"]);
 
 export const STEP_SCHEMA = {
@@ -14,7 +14,9 @@ export const STEP_SCHEMA = {
         do: { type: "string", enum: STEP_KINDS },
         note: { type: "string", description: "Free text shown in the report." },
         ms: { type: "integer", description: "wait: milliseconds to pause." },
-        expr: { type: "string", description: "waitFor/assert: JS expression evaluated in the game page; truthy passes." },
+        expr: { type: "string", description: "waitFor/assert: JS expression evaluated in the game page; truthy passes. waitForState/assertState: expression over `state`, `metrics` and `events` from the game probe (window.__game), e.g. \"state.phase === 'racing' && metrics.physicsMs < 4\"." },
+        args: { description: "gameCommand: arguments passed to window.__game.command(name, args)." },
+        event: { type: "string", description: "waitForEvent: name of a gameplay event the probe must emit (from now on)." },
         timeoutMs: { type: "integer", description: "waitFor: give up after (default 10000)." },
         key: { type: "string" }, holdMs: { type: "integer" }, times: { type: "integer", description: "key: repeat count (default 1)." }, gapMs: { type: "integer" },
         shift: { type: "boolean" }, ctrl: { type: "boolean" }, alt: { type: "boolean" }, meta: { type: "boolean" },
@@ -24,7 +26,7 @@ export const STEP_SCHEMA = {
         message: { type: "string", description: "assert: failure message." },
         min: { type: "number", description: "expectFps: minimum average fps over sampleMs." }, sampleMs: { type: "integer" },
         max: { type: "integer", description: "expectNoHitches: allowed hitch count (default 0)." }, maxFrameMs: { type: "number", description: "expectNoHitches: fail if any frame exceeded this." },
-        name: { type: "string", description: "screenshot: file name." },
+        name: { type: "string", description: "screenshot: file name. gameCommand: command name." },
         cpu: { type: "number" }, network: { type: ["string", "object"] },
         hidden: { type: ["boolean", "null"] }, restoreAfterMs: { type: ["integer", "null"] },
     },
@@ -32,6 +34,7 @@ export const STEP_SCHEMA = {
     additionalProperties: false,
 };
 
+const STATE_EXPR = (expr) => `{ const g = await window.__gp.gameState(); if (!g.present) throw new Error("no game probe (window.__game) on this page"); const state = g.state ?? {}, metrics = g.metrics ?? {}, events = g.events?.recent ?? []; return (${expr}\n); }`;
 const FPS_SAMPLER = (ms) => `if (document.hidden) throw new Error("page is hidden (requestAnimationFrame is paused) — bring the panel into view or use the lab"); return await new Promise((resolve) => { let n = 0; const start = performance.now(); requestAnimationFrame(function f(t) { n++; if (t - start < ${ms}) requestAnimationFrame(f); else resolve(Math.round((n * 1000) / (t - start))); }); })`;
 
 export async function runScenario(driver, scenario, { filesDir, log }) {
@@ -87,6 +90,33 @@ async function runStep(d, s, ctx) {
                 await d.wait(interval);
             }
         }
+        case "waitForState":
+        case "assertState": {
+            const code = STATE_EXPR(s.expr);
+            if (s.do === "assertState") {
+                const v = await d.evaluate(code, s.timeoutMs ?? 15000);
+                if (!v) throw new Error(s.message || `state assertion failed: ${s.expr}`);
+                return { value: v };
+            }
+            const timeout = s.timeoutMs ?? 10000, interval = s.intervalMs ?? 100, start = Date.now();
+            for (;;) {
+                const v = await d.evaluate(code, 5000).catch((e) => ({ __err: e.message }));
+                if (v && !v.__err) return { value: v, afterMs: Date.now() - start };
+                if (Date.now() - start > timeout) throw new Error(`waitForState timed out after ${timeout} ms: ${s.expr}${v?.__err ? ` (last error: ${v.__err})` : ""}`);
+                await d.wait(interval);
+            }
+        }
+        case "waitForEvent": {
+            const timeout = s.timeoutMs ?? 10000, start = Date.now();
+            const since = (await d.evaluate("(await window.__gp.gameState()).events.total")) ?? 0;
+            for (;;) {
+                const ev = await d.evaluate(`{ const g = await window.__gp.gameState(); const skip = Math.max(0, g.events.recent.length - (g.events.total - ${since})); return g.events.recent.slice(skip).find((e) => e.name === ${JSON.stringify(s.event)}) || null; }`, 5000).catch(() => null);
+                if (ev) return { event: ev, afterMs: Date.now() - start };
+                if (Date.now() - start > timeout) throw new Error(`waitForEvent timed out after ${timeout} ms: no "${s.event}" event from the game probe`);
+                await d.wait(s.intervalMs ?? 100);
+            }
+        }
+        case "gameCommand": return d.gameCommand(s.name, s.args);
         case "key": {
             const times = s.times ?? 1, out = [];
             for (let k = 0; k < times; k++) {

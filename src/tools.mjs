@@ -86,6 +86,18 @@ export const TOOLS = [
         handler: async (p, i) => { const d = p.driverFor(i?.target ?? "auto"); return { target: d.name, ...(await d.loadTimeline()) }; },
     },
     {
+        name: "get_game_state",
+        description: "Read the game's own view of itself through the gamelab probe (window.__game): engine + version, state() (scene, phase, score, lap, …), metrics() (engine-side timings such as processMs/physicsMs, node/entity counts, engine draw calls, GC allocation), and the recent gameplay events it emitted. Use it to know where the player is before sending input, and to attribute frame time to physics vs script vs render. Returns present:false with setup hints if the game has no probe (see gamelab probes/ for Godot, Unity and web).",
+        inputSchema: { type: "object", properties: { target: TARGET_PROP }, additionalProperties: false },
+        handler: async (p, i) => { const d = p.driverFor(i?.target); return { target: d.name, ...(await d.gameState()) }; },
+    },
+    {
+        name: "game_command",
+        description: "Send a command to the game through its probe (window.__game.command(name, args)) — e.g. start_race, load_level, set_seed, quit_to_menu — so tests can skip menus and reach a deterministic state. Which commands exist is up to the game; get_game_state → hasCommands tells you if any handler is wired.",
+        inputSchema: { type: "object", properties: { name: { type: "string" }, args: { description: "JSON-serialisable arguments (object, array, string, number) or omitted." }, target: TARGET_PROP }, required: ["name"], additionalProperties: false },
+        handler: async (p, i) => { const d = p.driverFor(i?.target); return { target: d.name, ...(await d.gameCommand(i.name, i.args)) }; },
+    },
+    {
         name: "profile",
         description: "Sample the game's main thread for durationMs (default 5000) with the JS Self-Profiling API and return hot functions by self time, heaviest subtrees, per-file totals, busy vs idle %, and GC time — i.e. where the CPU goes in the code. Play/drive the game while it runs (it awaits). Chromium only; wasm frames show as wasm-function[N] unless the export keeps names (debug build).",
         inputSchema: { type: "object", properties: { durationMs: { type: "integer", minimum: 500, maximum: 30000 }, target: TARGET_PROP }, additionalProperties: false },
@@ -106,7 +118,7 @@ export const TOOLS = [
     },
     {
         name: "eval",
-        description: "Run JavaScript inside the game page and return the (JSON-serialized) result. Supports expressions or statements with `return`, and `await`. Use it to inspect or tweak game state, e.g. `window.game.scene.scenes.map(s => s.scene.key)` or `player.x = 100`. `window.__gp` exposes metrics(), loadTimeline(), hitches(), setVisibility(), loseContext().",
+        description: "Run JavaScript inside the game page and return the (JSON-serialized) result. Supports expressions or statements with `return`, and `await`. Use it to inspect or tweak game state, e.g. `window.game.scene.scenes.map(s => s.scene.key)` or `player.x = 100`. `window.__gp` exposes metrics(), loadTimeline(), hitches(), gameState(), gameCommand(), setVisibility(), loseContext(); `window.__game` (if the game ships a gamelab probe) exposes state(), metrics(), command().",
         inputSchema: { type: "object", properties: { code: { type: "string" }, timeoutMs: { type: "integer", minimum: 100, maximum: 120000 }, target: TARGET_PROP }, required: ["code"], additionalProperties: false },
         handler: async (p, i) => ({ value: await p.driverFor(i.target).evaluate(i.code, i.timeoutMs ?? CMD_TIMEOUT_MS) }),
     },
@@ -274,7 +286,7 @@ export const TOOLS = [
     // ---- scripted scenarios -------------------------------------------------
     {
         name: "run_scenario",
-        description: `Run a scripted test scenario against the game and get a pass/fail report (also saved as JSON). Steps: ${STEP_KINDS.join(", ")}. Example: [{do:"waitFor", expr:"window.__gp.metrics().webgl.drawCallsTotal > 0"}, {do:"key", key:"ArrowUp", holdMs:1500}, {do:"expectFps", min:50}, {do:"expectNoErrors"}, {do:"expectNoHitches", max:2}, {do:"screenshot", name:"after-start"}]. Runs in the lab when open (target auto) so results match the exported Playwright test; tap/swipe/gamepad/throttle need the lab.`,
+        description: `Run a scripted test scenario against the game and get a pass/fail report (also saved as JSON). Steps: ${STEP_KINDS.join(", ")}. Example: [{do:"waitFor", expr:"window.__gp.metrics().webgl.drawCallsTotal > 0"}, {do:"gameCommand", name:"start_race"}, {do:"waitForState", expr:"state.phase === 'racing'"}, {do:"key", key:"ArrowUp", holdMs:1500}, {do:"assertState", expr:"state.speed > 10"}, {do:"expectFps", min:50}, {do:"expectNoErrors"}, {do:"expectNoHitches", max:2}, {do:"screenshot", name:"after-start"}]. Runs in the lab when open (target auto) so results match the exported Playwright test; tap/swipe/gamepad/throttle need the lab.`,
         inputSchema: {
             type: "object",
             properties: {

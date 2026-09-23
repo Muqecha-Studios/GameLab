@@ -105,7 +105,7 @@ export const HOOK_JS = String.raw`(() => {
     const orig = proto[name];
     proto[name] = function () { try { fn.apply(this, arguments); } catch (_) {} return orig.apply(this, arguments); };
   }
-  function markDraw(count) { gl.draws++; gl.instances += count || 1; if (gl.firstDrawAt === null) gl.firstDrawAt = performance.now(); }
+  function markDraw(count) { gl.draws++; gl.instances += count || 1; if (gl.firstDrawAt === null) gl.firstDrawAt = performance.now(); if (gpu.ext) gpuBegin(); }
   function st(ctx) { let o = ctx.__gpst; if (!o) { o = ctx.__gpst = { unit: 0, tex: {}, buf: {}, rb: null, prog: null, fbo: null }; } return o; }
   // bytes per pixel for (format, type); good enough for a memory estimate
   function bpp(ctx, fmt, type) {
@@ -168,6 +168,7 @@ export const HOOK_JS = String.raw`(() => {
     wrap(P, "texImage3D", function () { onTexImage3D(this, arguments); });
     wrap(P, "texStorage2D", function (t, levels, fmt, w, h) { const b = Math.round(w * h * 4 * (levels > 1 ? 1.34 : 1)); gl.texUploadBytes += b; setTexBytes(this, t, 0, b); });
     wrap(P, "generateMipmap", function (t) { const tex = boundTex(this, t); const rec = tex && texBytes.get(tex); if (rec && !rec.mip) { rec.mip = true; const extra = Math.round(rec.total * 0.34); rec.total += extra; gl.textureBytes += extra; } });
+    wrap(P, "clear", () => { if (gpu.ext) gpuBegin(); });
     wrap(P, "compileShader", () => { gl.shaderCompiles++; if (gl.firstDrawAt !== null) act("shaderCompile"); });
     wrap(P, "linkProgram", () => { gl.programLinks++; if (gl.firstDrawAt !== null) act("programLink"); });
     wrap(P, "bufferData", function () { onBufferData(this, arguments); });
@@ -211,7 +212,7 @@ export const HOOK_JS = String.raw`(() => {
   // ---- GPU frame time (EXT_disjoint_timer_query_webgl2; Chromium desktop) --
   // One TIME_ELAPSED query spans the commands issued between two of our rAF
   // ticks (we registered rAF first, so our tick runs before the game's).
-  const gpu = { ext: null, ctx: null, pending: [], active: null, samples: [], unavailable: null, disjoint: 0 };
+  const gpu = { ext: null, ctx: null, pending: [], active: null, frameDone: false, samples: [], unavailable: null, disjoint: 0 };
   function gpuSetup() {
     if (gpu.ext || gpu.unavailable) return;
     const ctx = [...glContexts].filter((c) => typeof WebGL2RenderingContext !== "undefined" && c instanceof WebGL2RenderingContext).sort((a, b) => b.canvas.width * b.canvas.height - a.canvas.width * a.canvas.height)[0];
@@ -220,10 +221,24 @@ export const HOOK_JS = String.raw`(() => {
     if (!ext) { gpu.unavailable = "EXT_disjoint_timer_query_webgl2 not exposed by this browser/GPU"; return; }
     gpu.ext = ext; gpu.ctx = ctx;
   }
+  // The timer query brackets only the game's own GL work: it begins at the first
+  // draw/clear of a frame and ends in a rAF callback registered *after* the game's
+  // (from the post-render MessageChannel task), so begin, draws and end are flushed
+  // to the GPU together and idle time waiting for vsync is not counted.
+  function gpuBegin() {
+    const ctx = gpu.ctx, ext = gpu.ext; if (!ext || gpu.active || gpu.frameDone || document.hidden) return;
+    try { if (ctx.isContextLost()) return; const q = ctx.createQuery(); ctx.beginQuery(ext.TIME_ELAPSED_EXT, q); gpu.active = q; }
+    catch (e) { gpu.unavailable = "timer query failed: " + (e && e.message || e); gpu.ext = null; gpu.active = null; }
+  }
+  function gpuEnd() {
+    const ctx = gpu.ctx, ext = gpu.ext; if (!ext || !gpu.active) return;
+    try { ctx.endQuery(ext.TIME_ELAPSED_EXT); gpu.pending.push(gpu.active); } catch (_) {}
+    gpu.active = null; gpu.frameDone = true;
+  }
   function gpuTick() {
     const ctx = gpu.ctx, ext = gpu.ext; if (!ext || ctx.isContextLost()) return;
+    gpuEnd(); gpu.frameDone = false;
     try {
-      if (gpu.active) { ctx.endQuery(ext.TIME_ELAPSED_EXT); gpu.pending.push(gpu.active); gpu.active = null; }
       // collect finished queries (oldest first)
       while (gpu.pending.length) {
         const q = gpu.pending[0];
@@ -231,11 +246,10 @@ export const HOOK_JS = String.raw`(() => {
         gpu.pending.shift();
         if (ctx.getParameter(ext.GPU_DISJOINT_EXT)) { gpu.disjoint++; ctx.deleteQuery(q); continue; }
         const ns = ctx.getQueryParameter(q, ctx.QUERY_RESULT); ctx.deleteQuery(q);
-        gpu.samples.push(ns / 1e6); if (gpu.samples.length > 600) gpu.samples.shift();
+        gpu.samples.push(Math.round(ns / 1e4) / 100); if (gpu.samples.length > 600) gpu.samples.shift();
         if (ns > 0) gpu.nonzero = true; else if (!gpu.nonzero && gpu.samples.length >= 120) { gpu.unavailable = "timer query reports 0 ns (this driver does not time GPU work)"; gpu.ext = null; gpu.samples.length = 0; for (const p of gpu.pending) ctx.deleteQuery(p); gpu.pending.length = 0; return; }
       }
       if (gpu.pending.length > 8) { ctx.deleteQuery(gpu.pending.shift()); }
-      if (!document.hidden) { const q = ctx.createQuery(); ctx.beginQuery(ext.TIME_ELAPSED_EXT, q); gpu.active = q; }
     } catch (e) { gpu.unavailable = "timer query failed: " + (e && e.message || e); gpu.ext = null; gpu.active = null; }
   }
 
@@ -351,7 +365,7 @@ export const HOOK_JS = String.raw`(() => {
   // delivered after all rAF callbacks and the frame's rendering steps.
   let tickStart = 0, cpuPending = false;
   const mc = typeof MessageChannel !== "undefined" ? new MessageChannel() : null;
-  if (mc) mc.port1.onmessage = () => { cpuPending = false; const ms = performance.now() - tickStart; if (frameTimes.length) { cpuTimes.push(ms); if (cpuTimes.length > 1200) cpuTimes.shift(); } winCpu += ms; winCpuN++; };
+  if (mc) mc.port1.onmessage = () => { cpuPending = false; if (gpu.ext) requestAnimationFrame(gpuEnd); const ms = performance.now() - tickStart; if (frameTimes.length) { cpuTimes.push(ms); if (cpuTimes.length > 1200) cpuTimes.shift(); } winCpu += ms; winCpuN++; };
   // Input latency: first rAF after an input event -> event.timeStamp
   const inputLat = [];              // ms, last 200
   let winInput = 0, winInputN = 0;  // input latency seen in the current fps window
@@ -479,6 +493,9 @@ export const HOOK_JS = String.raw`(() => {
       // Holding the display rate: the frame interval is set by vsync, so main-thread
       // time tells us the headroom, not the bottleneck.
       const head = Math.round((16.7 - Math.max(cpu, gpuP || 0)) * 10) / 10;
+      // Main-thread time longer than the frame while still holding 60 fps means the
+      // post-render timing is skewed (headless/software compositor, background tab).
+      if (head < 0) return { kind: "vsync", headroomMs: null, why: "holding " + Math.round(1000 / dt) + " fps; main-thread timing (" + cpu + " ms) exceeds the frame and is unreliable here" + gpuTxt };
       return { kind: head < 4 ? "vsync-tight" : "vsync", headroomMs: head, why: "holding " + Math.round(1000 / dt) + " fps (main " + cpu + " ms" + gpuTxt + ", ~" + head + " ms headroom" + (head < 4 ? " — slower devices will drop frames" : "") + ")" };
     }
     if (cpu >= dt * 0.75) return { kind: "cpu", why: "main thread busy " + cpu + " ms of a " + dt + " ms frame" + gpuTxt };

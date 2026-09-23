@@ -295,6 +295,44 @@ export class Lab {
     }
     async reload() { const page = this.ensure(); this.logs = []; await page.reload({ waitUntil: "load" }); return { reloaded: true }; }
 
+    // ---- CPU headroom sweep ------------------------------------------------------
+    // Slows the CPU step by step and measures frame time at each step, so you learn how
+    // much slower a device can be before the game drops below the target fps.
+    async headroom({ steps = [1, 2, 4, 6, 8], holdMs = 4000, settleMs = 800, targetFps = 30 } = {}) {
+        this.ensure();
+        steps = [...new Set(steps.map(Number).filter((x) => x >= 1 && x <= 20))].sort((a, b) => a - b);
+        if (!steps.length) throw new Error("steps must be CPU slowdown factors between 1 and 20, e.g. [1, 2, 4, 6]");
+        const prev = this.throttle.cpu, results = [];
+        let breaksAt = null, lastOk = null;
+        try {
+            for (const cpu of steps) {
+                await this.setThrottle({ cpu });
+                await new Promise((r) => setTimeout(r, settleMs));
+                await this.hookCall("window.__gp.resetHitches()");
+                await new Promise((r) => setTimeout(r, holdMs));
+                const m = await this.hookCall("window.__gp.metrics()");
+                const f = m.frame || {}, fps = f.p50Ms ? Math.round(1000 / f.p50Ms) : null;
+                const row = { cpu, fps, p50Ms: f.p50Ms, p95Ms: f.p95Ms, low1PctFps: f.low1PctFps, mainThreadMs: m.cpu?.p50Ms ?? null, gpuMs: m.gpu?.p50Ms ?? null, hitches: m.hitches?.count ?? 0, bound: m.bound?.kind ?? null, samples: f.samples ?? 0 };
+                results.push(row);
+                if (fps != null && fps >= targetFps) lastOk = cpu;
+                else if (fps != null && breaksAt === null) { breaksAt = cpu; break; }
+            }
+        } finally {
+            await this.setThrottle({ cpu: prev }).catch(() => {});
+        }
+        const cls = (x) => (x == null ? "?" : x >= 8 ? "very low-end phones" : x >= 6 ? "low-end phones" : x >= 4 ? "mid-range phones" : x >= 2 ? "high-end phones / old laptops" : "desktop only");
+        const verdict = lastOk === null
+            ? `Below ${targetFps} fps even with no CPU slowdown — optimise before testing on devices.`
+            : breaksAt === null
+                ? `Holds ≥${targetFps} fps up to ${lastOk}× slower CPU (${cls(lastOk)}) — did not break within the sweep.`
+                : `Holds ≥${targetFps} fps up to ${lastOk}× slower CPU (${cls(lastOk)}); drops to ${results[results.length - 1].fps} fps at ${breaksAt}× (${cls(breaksAt)}).`;
+        const last = results[results.length - 1];
+        const hint = last?.bound === "cpu" || (last?.mainThreadMs && last.p50Ms && last.mainThreadMs >= last.p50Ms * 0.7)
+            ? "The main thread is the limit under throttling — profile it (profile tool) to find the hot functions."
+            : last?.bound === "gpu" || last?.bound === "gpu?" ? "Frame time barely moved with CPU slowdown — the limit is the GPU (fill rate / draw calls), not scripts." : null;
+        return { targetFps, holdMs, steps: results, maxOkSlowdown: lastOk, breaksAt, verdict, hint, scale: "Chrome DevTools guidance: 4× ≈ mid-tier phone, 6× ≈ low-end phone. CPU throttling does not slow the GPU." };
+    }
+
     // ---- emulation -----------------------------------------------------------
     async setThrottle({ cpu, network }) {
         this.ensure();

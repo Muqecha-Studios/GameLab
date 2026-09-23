@@ -58,7 +58,7 @@ Then tell the agent, e.g. *"open the Godot export in builds/web, run it on an iP
 3. `run_scenario`, `get_metrics`, `profile`, `trace_start/stop`, `screenshot` (returned inline as an image), …
 4. `export_test { outDir: "tests/web" }` to turn the run into a CI test.
 
-MCP tools: `open close list` + `reload get_logs clear_logs get_stats get_history get_metrics get_load_timeline profile get_game_state game_command screenshot eval press_key click set_visibility lose_webgl_context set_viewport set_options list_devices save_device delete_device lab_open lab_close lab_status touch gamepad set_throttle trace_start trace_stop run_scenario export_test`. Every tool accepts an optional `instance` (defaults to the last opened) and most accept `target: panel | lab | auto`.
+MCP tools: `open close list` + `reload get_logs clear_logs get_stats get_history get_metrics get_load_timeline profile get_game_state game_command screenshot eval press_key click set_visibility lose_webgl_context set_viewport set_options list_devices save_device delete_device lab_open lab_close lab_status touch gamepad set_throttle headroom trace_start trace_stop run_scenario export_test`. Every tool accepts an optional `instance` (defaults to the last opened) and most accept `target: panel | lab | auto`.
 
 Artifacts (screenshots, `.report.json`, `.trace.json`, `.webm`, `.har`) go to `--out`, `$GAMELAB_OUT` or `./.gamelab`.
 
@@ -72,6 +72,7 @@ gamelab run smoke.json builds/web --profile budget-android --trace     # 360×80
 gamelab run smoke.json builds/web --device "iPhone 14" --landscape --cpu 4
 gamelab run smoke.json builds/web --headless   # CI: software WebGL via SwiftShader; exit 1 on failure
 
+gamelab headroom builds/web --command start_race --steps 1,2,4,6,8   # CPU throttle sweep: how much slower a device can be before dropping below 30 fps
 gamelab export smoke.json builds/web --out tests/web --profile iphone-se
 gamelab devices                                 # list seeded + your own profiles
 cd tests/web && npm i && npx playwright test --update-snapshots

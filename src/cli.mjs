@@ -20,6 +20,10 @@ Usage:
                  [--cpu 4] [--network slow-3g] [--headless] [--width W --height H] [--video] [--har]
                  [--trace] [--out DIR] [--json]
       Open the game in a Playwright Chromium, run the scenario, print the report. Exit 1 on failure.
+  gamelab headroom [dir|url] [--command start_race] [--wait 5] [--steps 1,2,4,6,8] [--hold 4] [--target 30]
+                 [--profile ID] [--device X] [--width W --height H] [--json]
+      CPU headroom sweep: how much slower a device can be before the game drops below --target fps.
+      --command sends a window.__game command first (to get into gameplay), --wait seconds before measuring.
   gamelab export <scenario.json> [dir|url] --out DIR [--profile ID] [--device X] [--viewport WxH] [--port N] [--overwrite]
       Write a standalone Playwright project replaying the scenario (for CI).
   gamelab devices [--json]
@@ -42,6 +46,7 @@ const OPTIONS = {
     headless: { type: "boolean" }, width: { type: "string" }, height: { type: "string" }, video: { type: "boolean" }, har: { type: "boolean" },
     trace: { type: "boolean" }, json: { type: "boolean" }, viewport: { type: "string" }, overwrite: { type: "boolean" }, profile: { type: "string" },
     open: { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "v" },
+    command: { type: "string" }, wait: { type: "string" }, steps: { type: "string" }, hold: { type: "string" }, target: { type: "string" },
 };
 
 const isUrl = (s) => /^https?:\/\//.test(s ?? "");
@@ -105,6 +110,27 @@ export async function main(argv = process.argv.slice(2)) {
                 await p.close();
             }
             process.exitCode = code;
+            return;
+        }
+
+        case "headroom": {
+            const p = await openPreview({ ...sourceInput(rest[0]), watch: false }, common);
+            try {
+                await callTool(p, "lab_open", { profile: o.profile, device: o.device, headless: true, width: o.width ? Number(o.width) : undefined, height: o.height ? Number(o.height) : undefined });
+                await callTool(p, "run_scenario", { name: "headroom-warmup", target: "lab", steps: [{ do: "waitFor", expr: "window.__gp && window.__gp.metrics().webgl.drawCallsTotal > 0", timeoutMs: 60000 }] });
+                if (o.command) await callTool(p, "game_command", { name: o.command, target: "lab" });
+                await new Promise((r) => setTimeout(r, (o.wait ? Number(o.wait) : 5) * 1000));
+                const res = await callTool(p, "headroom", { steps: o.steps ? o.steps.split(",").map(Number) : undefined, holdMs: o.hold ? Number(o.hold) * 1000 : undefined, targetFps: o.target ? Number(o.target) : undefined });
+                await callTool(p, "lab_close");
+                if (o.json) console.log(JSON.stringify(res, null, 2));
+                else {
+                    console.log(`\nCPU headroom (target ${res.targetFps} fps, ${res.holdMs / 1000} s per step)\n`);
+                    console.log("  slowdown   fps   p50 ms   p95 ms   1% low   main ms   hitches  bound");
+                    for (const r of res.steps) console.log(`  ${String(r.cpu + "×").padEnd(9)} ${String(r.fps ?? "?").padStart(4)}   ${String(r.p50Ms ?? "?").padStart(6)}   ${String(r.p95Ms ?? "?").padStart(6)}   ${String(r.low1PctFps ?? "–").padStart(6)}   ${String(r.mainThreadMs ?? "–").padStart(7)}   ${String(r.hitches).padStart(7)}  ${r.bound ?? ""}`);
+                    console.log(`\n${res.verdict}${res.hint ? "\n" + res.hint : ""}\n${res.scale}`);
+                }
+                process.exitCode = res.maxOkSlowdown === null ? 1 : 0;
+            } finally { await p.close(); }
             return;
         }
 

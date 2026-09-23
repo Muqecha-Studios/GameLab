@@ -322,6 +322,16 @@ export const TOOLS = [
         handler: (p, i) => labCall(() => p.requireLab().setThrottle(i ?? {})),
     },
     {
+        name: "headroom",
+        description: "CPU headroom sweep in the lab: throttles the CPU through the given slowdown steps (default 1,2,4,6,8), holds each for holdMs and records fps / frame percentiles / main-thread ms / hitches, stopping at the first step below targetFps. Returns the largest slowdown that still holds the target ('runs on mid-range phones'), the breaking point, and whether the limit is the CPU or GPU. Get the game into real gameplay first (game_command / press_key); takes steps × (holdMs + 0.8 s). Restores the previous throttle afterwards.",
+        inputSchema: { type: "object", properties: {
+            steps: { type: "array", items: { type: "number", minimum: 1, maximum: 20 }, description: "CPU slowdown factors to test in order. Default [1, 2, 4, 6, 8]." },
+            holdMs: { type: "number", minimum: 1000, description: "How long to measure at each step (ms). Default 4000." },
+            targetFps: { type: "number", description: "Frame rate the game must hold. Default 30." },
+        }, additionalProperties: false },
+        handler: (p, i) => labCall(() => p.requireLab().headroom(i ?? {})),
+    },
+    {
         name: "trace_start",
         description: "Start recording in the lab browser. kind 'chrome' (default): Chrome performance trace (main-thread tasks, GC, frames, GPU) → .trace.json for Perfetto/DevTools, with a summary of long tasks on stop. kind 'playwright': Playwright trace with screenshots/actions → .pw.zip for `playwright show-trace`.",
         inputSchema: { type: "object", properties: { kind: { type: "string", enum: ["chrome", "playwright"] }, name: { type: "string" }, screenshots: { type: "boolean", description: "playwright: capture screenshots (default true)." }, snapshots: { type: "boolean", description: "playwright: DOM snapshots (default false; heavy for wasm games)." } }, additionalProperties: false },

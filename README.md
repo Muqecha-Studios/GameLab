@@ -22,7 +22,7 @@ It serves your build (or proxies your dev server) with an instrumented hook, dri
 |---|---|
 | Serving | Static build folder with correct wasm/br/gz MIME, optional COOP/COEP (SharedArrayBuffer), or a proxy to a dev server with HMR WebSocket passthrough; file watcher → auto-reload |
 | Hook (in-page) | FPS + frame-time percentiles, hitch log (>50 ms), WebGL draw/instance/texture/shader/buffer counters, context-loss tracking, first frame / first draw, load timeline (slowest & largest assets), console + error capture, **CPU profile** (JS Self-Profiling API: hot functions, subtrees, per-file, busy/idle/GC), `window.__gp` API |
-| Shell (browser tab) | The served page at `/__gp/`: the game in an iframe with FPS badge, viewport presets, isolation toggle, a Console drawer and a **Perf** tab — live frame/hitch/WebGL/memory/load stats, plain-English **Findings** (e.g. "not holding 60 fps", "shader compiles after startup", "heap growing 12 MB/min", "wasm served uncompressed"), and a ● Profile button that lists the hottest functions with file:line |
+| Shell (browser tab) | The served page at `/__gp/`: the game in an iframe with FPS badge, a **device profile** menu (resolution + DPR/UA/touch/cores emulation, editable), isolation toggle, a Console drawer and a **Perf** tab — live frame/hitch/WebGL/memory/load stats, plain-English **Findings** (e.g. "not holding 60 fps", "shader compiles after startup", "heap growing 12 MB/min", "wasm served uncompressed"), and a ● Profile button that lists the hottest functions with file:line |
 | Lab (Playwright Chromium) | Trusted keyboard/mouse, touch (tap/hold/swipe), virtual gamepad, device presets (iPhone/Pixel/iPad…), CPU throttling, network presets (slow-3g … offline), visibility/lifecycle freeze, WebGL context loss, Chrome performance trace (+ long-task/GC summary), Playwright trace, video, HAR |
 | Game probe (opt-in) | A 20-line contract (`window.__game`) plus drop-in probes for **Godot** (autoload), **Unity** (`.cs` + `.jslib`) and plain **web** games: game state (scene, phase, score…), engine timings (process/physics/render ms, draw calls, nodes, GC alloc, texture memory), named events and remote commands. Shows up in the Perf tab, in findings ("physics is 45 % of the frame", "3 orphan nodes"), and as scenario steps |
 | Scenarios | JSON steps → pass/fail report: `waitFor`, `key`, `click`, `tap`, `swipe`, `gamepad`, `eval`, `assert`, `expectFps`, `expectNoErrors`, `expectNoHitches`, `screenshot`, `throttle`, `waitForState`, `assertState`, `gameCommand`, `waitForEvent`, … |
@@ -58,7 +58,7 @@ Then tell the agent, e.g. *"open the Godot export in builds/web, run it on an iP
 3. `run_scenario`, `get_metrics`, `profile`, `trace_start/stop`, `screenshot` (returned inline as an image), …
 4. `export_test { outDir: "tests/web" }` to turn the run into a CI test.
 
-MCP tools: `open close list` + `reload get_logs clear_logs get_stats get_metrics get_load_timeline profile get_game_state game_command screenshot eval press_key click set_visibility lose_webgl_context set_viewport set_options lab_open lab_close lab_status touch gamepad set_throttle trace_start trace_stop run_scenario export_test`. Every tool accepts an optional `instance` (defaults to the last opened) and most accept `target: panel | lab | auto`.
+MCP tools: `open close list` + `reload get_logs clear_logs get_stats get_metrics get_load_timeline profile get_game_state game_command screenshot eval press_key click set_visibility lose_webgl_context set_viewport set_options list_devices save_device delete_device lab_open lab_close lab_status touch gamepad set_throttle trace_start trace_stop run_scenario export_test`. Every tool accepts an optional `instance` (defaults to the last opened) and most accept `target: panel | lab | auto`.
 
 Artifacts (screenshots, `.report.json`, `.trace.json`, `.webm`, `.har`) go to `--out`, `$GAMELAB_OUT` or `./.gamelab`.
 
@@ -68,10 +68,12 @@ Artifacts (screenshots, `.report.json`, `.trace.json`, `.webm`, `.har`) go to `-
 gamelab serve builds/web --open                # serves + opens the shell (stats, console, Perf tab) in your browser
 gamelab serve http://localhost:5173/           # proxy a dev server (Vite/Phaser/etc.)
 
-gamelab run smoke.json builds/web --device "iPhone 14" --landscape --cpu 4 --trace
+gamelab run smoke.json builds/web --profile budget-android --trace     # 360×800 @2x, touch, Android UA, cpu ×6, fast-3g
+gamelab run smoke.json builds/web --device "iPhone 14" --landscape --cpu 4
 gamelab run smoke.json builds/web --headless   # CI: software WebGL via SwiftShader; exit 1 on failure
 
-gamelab export smoke.json builds/web --out tests/web
+gamelab export smoke.json builds/web --out tests/web --profile iphone-se
+gamelab devices                                 # list seeded + your own profiles
 cd tests/web && npm i && npx playwright test --update-snapshots
 ```
 
@@ -145,6 +147,14 @@ What you get once a probe is present:
 ```
 
 Debug/development exports keep function names in the wasm, so `profile` shows `Node::_propagate_process` instead of `wasm-function[1234]`.
+
+## Device profiles
+
+The shell's device menu (and `list_devices` / `gamelab devices`) ships 16 seeded profiles — iPhone SE/15/15 Pro Max, Pixel 7, Galaxy S23, a budget Android, iPad/iPad Pro/Galaxy Tab, Steam Deck, Chromebook, laptop, 1080p/4K desktop, itch.io and portal embeds — each with resolution, pixel ratio, touch, mobile UA, CPU slowdown, network preset, cores and memory.
+
+Selecting one in the **panel** resizes the frame and reloads the game with the hook overriding `devicePixelRatio`, `navigator.userAgent`/`platform`/`userAgentData`, `maxTouchPoints`, `hardwareConcurrency`, `deviceMemory` and `screen.*` before any game script runs — so the engine picks the DPR, input mode and quality tier it would on that device. The badge reads "as iPhone 15" when overrides are active. A browser cannot slow its own CPU or network, so those two are shown as **lab** chips; **Run in lab** (or `lab_open { profile }`, `gamelab run --profile`) opens a Playwright Chromium with the full profile including throttling. `export_test { profile }` bakes it into the generated `playwright.config.ts` plus a leading `throttle` step.
+
+Profiles are editable: **New** / duplicate / edit / delete in the menu, or `save_device` / `delete_device`. Your profiles live in `~/.gamelab/devices.json` (`$GAMELAB_HOME` to move it) — a plain `{ "devices": [ … ] }` list you can commit next to your project. Saving under a seeded id overrides that seed; deleting the override restores it.
 
 ## Panel vs lab
 

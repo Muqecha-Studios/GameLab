@@ -100,7 +100,7 @@ export class Lab {
             viewport,
             deviceScaleFactor: input.deviceScaleFactor ?? device?.deviceScaleFactor ?? 1,
             hasTouch: input.touch ?? device?.hasTouch ?? false,
-            isMobile: device?.isMobile ?? false,
+            isMobile: input.isMobile ?? device?.isMobile ?? false,
             userAgent: input.userAgent ?? device?.userAgent,
             colorScheme: input.colorScheme,
             locale: input.locale,
@@ -118,7 +118,7 @@ export class Lab {
         this.page.on("crash", () => this.pushLog("error", "page crashed"));
         this.page.on("close", () => { this.page = null; });
         this.cdp = await this.context.newCDPSession(this.page);
-        this.opts = { headless, device: input.device ?? null, viewport, deviceScaleFactor: ctxOpts.deviceScaleFactor, touch: ctxOpts.hasTouch, video: !!input.video, har: !!input.har, harPath: ctxOpts.recordHar?.path };
+        this.opts = { headless, device: input.device ?? null, profile: input.profile ?? null, viewport, deviceScaleFactor: ctxOpts.deviceScaleFactor, touch: ctxOpts.hasTouch, video: !!input.video, har: !!input.har, harPath: ctxOpts.recordHar?.path };
         if (input.cpu || input.network) await this.setThrottle({ cpu: input.cpu, network: input.network });
 
         const url = this.baseUrl + this.gamePath;

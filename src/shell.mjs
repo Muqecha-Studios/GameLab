@@ -4,12 +4,7 @@
 // commands arriving over SSE to the game hook and posts results back.
 
 import { escapeHtml } from "./server.mjs";
-
-export const VIEWPORTS = {
-    fill: null,
-    "1920x1080": [1920, 1080], "1280x720": [1280, 720], "960x540": [960, 540], "800x600": [800, 600],
-    iphone: [390, 844], android: [412, 915], ipad: [820, 1180], steamdeck: [1280, 800], "itch-embed": [960, 640],
-};
+import { VIEWPORTS, GROUP_LABELS } from "./devices.mjs";
 
 export function renderShell({ title, source, gameSrc, isolation }) {
     return `<!doctype html>
@@ -18,45 +13,84 @@ export function renderShell({ title, source, gameSrc, isolation }) {
 <meta charset="utf-8" />
 <title>${escapeHtml(title)}</title>
 <style>
-  :root { --bg:#0f1115; --bar:#171a21; --bd:#262a33; --fg:#d7dae0; --mute:#7c8493; --acc:#4fa3ff; --ok:#3fcf8e; --warn:#f2b84b; --err:#ff5c5c; --mono: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  :root { --bg:#0f1115; --bar:#171a21; --bd:#262a33; --bd2:#343a47; --fg:#d7dae0; --mute:#8b93a3; --acc:#4fa3ff; --acc2:#7cbcff; --ok:#3fcf8e; --warn:#f2b84b; --err:#ff6b6b; --ctl:#1f232d; --ctl2:#272c38; --mono: ui-monospace, SFMono-Regular, Menlo, monospace; --ease:180ms cubic-bezier(.2,.7,.2,1); }
   * { box-sizing:border-box; }
-  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:12px system-ui, -apple-system, sans-serif; overflow:hidden; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--fg); font:12px system-ui, -apple-system, sans-serif; overflow:hidden; scrollbar-color:var(--bd2) transparent; }
+  ::-webkit-scrollbar { width:10px; height:10px; } ::-webkit-scrollbar-thumb { background:var(--bd2); border-radius:6px; border:2px solid transparent; background-clip:padding-box; } ::-webkit-scrollbar-thumb:hover { background-color:#454d5e; } ::-webkit-scrollbar-track { background:transparent; }
+  ::selection { background:rgba(79,163,255,.35); }
+  :focus-visible { outline:2px solid var(--acc); outline-offset:1px; }
   #app { display:flex; flex-direction:column; height:100%; }
-  #bar { display:flex; align-items:center; gap:8px; padding:6px 10px; background:var(--bar); border-bottom:1px solid var(--bd); flex:none; white-space:nowrap; overflow:hidden; }
-  #bar .grow { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; }
-  #bar b { font-weight:600; }
+  #bar { display:flex; align-items:center; gap:6px; padding:0 10px; height:38px; background:var(--bar); border-bottom:1px solid var(--bd); flex:none; white-space:nowrap; overflow:hidden; }
+  #bar .grow { flex:1; min-width:40px; overflow:hidden; text-overflow:ellipsis; display:flex; align-items:baseline; gap:6px; }
+  #bar .grow b { font-weight:600; flex:none; max-width:180px; overflow:hidden; text-overflow:ellipsis; } #bar .grow .muted { overflow:hidden; text-overflow:ellipsis; font-size:11px; direction:rtl; text-align:left; min-width:0; }
+  .grp { display:inline-flex; align-items:center; gap:4px; flex:none; }
+  .sep { width:1px; height:18px; background:var(--bd); margin:0 4px; flex:none; }
   .muted { color:var(--mute); }
-  button, select { background:#222633; color:var(--fg); border:1px solid var(--bd); border-radius:6px; padding:3px 8px; font:inherit; cursor:pointer; }
-  button:hover, select:hover { border-color:#3a4150; }
-  button.primary { background:var(--acc); border-color:var(--acc); color:#04101f; font-weight:600; }
-  label.chk { display:inline-flex; align-items:center; gap:4px; color:var(--mute); cursor:pointer; }
-  .dot { width:8px; height:8px; border-radius:50%; background:var(--err); flex:none; }
-  .dot.on { background:var(--ok); }
-  .badge { padding:1px 6px; border-radius:4px; border:1px solid var(--bd); color:var(--mute); font-size:11px; }
-  .badge.ok { color:var(--ok); border-color:#264a3a; } .badge.bad { color:var(--err); border-color:#5a2a2a; }
-  #fps { font:600 13px var(--mono); min-width:58px; text-align:right; }
+  button, select, input[type=text], input[type=number], input[type=search], textarea { background:var(--ctl); color:var(--fg); border:1px solid var(--bd); border-radius:6px; padding:0 8px; height:26px; font:inherit; transition:background var(--ease), border-color var(--ease), color var(--ease); }
+  button { cursor:pointer; display:inline-flex; align-items:center; gap:5px; }
+  button:hover, select:hover { background:var(--ctl2); border-color:var(--bd2); } button:active { background:#1a1e27; }
+  button:disabled { opacity:.5; cursor:default; }
+  button.primary { background:var(--acc); border-color:var(--acc); color:#04101f; font-weight:600; } button.primary:hover { background:var(--acc2); border-color:var(--acc2); }
+  button.danger { color:var(--err); } button.danger:hover { border-color:#5a2a2a; }
+  button.icon { width:26px; padding:0; justify-content:center; color:var(--mute); } button.icon:hover { color:var(--fg); }
+  button svg { width:14px; height:14px; flex:none; }
+  .tog { color:var(--mute); } .tog[aria-pressed=true] { color:var(--fg); background:#1d2a3d; border-color:#2f4b70; }
+  .tog i { width:7px; height:7px; border-radius:50%; background:var(--bd2); transition:background var(--ease); } .tog[aria-pressed=true] i { background:var(--acc); }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--err); flex:none; transition:background var(--ease); box-shadow:0 0 0 2px rgba(255,107,107,.15); }
+  .dot.on { background:var(--ok); box-shadow:0 0 0 2px rgba(63,207,142,.15); }
+  .badge { padding:2px 6px; border-radius:4px; border:1px solid var(--bd); color:var(--mute); font-size:10.5px; line-height:1; }
+  .badge.ok { color:var(--ok); border-color:#264a3a; } .badge.bad { color:var(--err); border-color:#5a2a2a; } .badge.acc { color:var(--acc2); border-color:#2f4b70; }
+  #dev { max-width:220px; } #dev .dn { overflow:hidden; text-overflow:ellipsis; } #dev .dd { color:var(--mute); font:11px var(--mono); }
+  #fps { font:600 12.5px var(--mono); min-width:56px; text-align:right; font-variant-numeric:tabular-nums; }
   #fps.warn { color:var(--warn);} #fps.bad { color:var(--err);}
-  #heap { font:11px var(--mono); color:var(--mute); min-width:52px; }
-  #spark { width:96px; height:22px; background:#0c0e12; border:1px solid var(--bd); border-radius:4px; }
+  #heap { font:11px var(--mono); color:var(--mute); min-width:48px; font-variant-numeric:tabular-nums; }
+  #spark { width:96px; height:24px; background:#0c0e12; border:1px solid var(--bd); border-radius:4px; }
   #stage { flex:1; min-height:0; position:relative; display:flex; align-items:center; justify-content:center; background:#0a0b0e url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16'%3E%3Crect width='8' height='8' fill='%230e1014'/%3E%3Crect x='8' y='8' width='8' height='8' fill='%230e1014'/%3E%3C/svg%3E"); overflow:hidden; }
   #wrap { position:relative; }
   #game { border:0; background:#000; display:block; transform-origin:0 0; }
-  #vplabel { position:absolute; right:8px; bottom:6px; font:11px var(--mono); color:var(--mute); pointer-events:none; }
+  #vplabel { position:absolute; right:8px; bottom:6px; font:11px var(--mono); color:var(--mute); pointer-events:none; background:rgba(10,11,14,.7); padding:2px 6px; border-radius:4px; font-variant-numeric:tabular-nums; }
+  #vplabel .lab { color:var(--warn); }
+  /* device popover */
+  #devpop { position:fixed; z-index:20; top:40px; width:360px; max-height:calc(100vh - 60px); display:flex; flex-direction:column; background:#141821; border:1px solid var(--bd2); border-radius:10px; box-shadow:0 12px 40px rgba(0,0,0,.55); overflow:hidden; opacity:0; transform:translateY(-4px); pointer-events:none; transition:opacity var(--ease), transform var(--ease); }
+  #devpop.open { opacity:1; transform:none; pointer-events:auto; }
+  .dp-head { display:flex; gap:6px; padding:8px; border-bottom:1px solid var(--bd); } .dp-head input { flex:1; min-width:0; }
+  #devlist { overflow:auto; flex:1; padding:4px 0; }
+  .dg { padding:8px 12px 3px; font-size:10.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--mute); }
+  .dev { display:grid; grid-template-columns:1fr auto; gap:0 8px; padding:5px 12px; cursor:pointer; align-items:center; transition:background var(--ease); } .dev:focus-visible { outline-offset:-2px; }
+  .dev:hover { background:#1b2030; } .dev[aria-selected=true] { background:#1a2537; box-shadow:inset 2px 0 0 var(--acc); }
+  .dev .dn { grid-column:1; font-weight:500; display:flex; gap:6px; align-items:center; } .dev .dd { grid-column:1; color:var(--mute); font:10.5px var(--mono); margin-top:1px; display:flex; gap:6px; flex-wrap:wrap; }
+  .dev .da { grid-column:2; grid-row:1 / span 2; display:none; gap:2px; } .dev:hover .da, .dev[aria-selected=true] .da { display:inline-flex; }
+  .dev .da button { height:22px; width:22px; }
+  .tag { font-size:9.5px; padding:1px 4px; border-radius:3px; border:1px solid var(--bd2); color:var(--mute); font-weight:500; letter-spacing:.02em; } .tag.user { color:var(--acc2); border-color:#2f4b70; }
+  .chip { padding:0 4px; border-radius:3px; background:#1f232d; } .chip.lab { color:var(--warn); background:#2a230f; }
+  .dp-foot { display:flex; gap:6px; align-items:center; padding:8px; border-top:1px solid var(--bd); } .dp-foot .grow { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; font-size:11px; }
+  #devedit { display:none; flex-direction:column; gap:8px; padding:10px 12px; overflow:auto; } #devpop.editing #devedit { display:flex; } #devpop.editing #devlist, #devpop.editing .dp-head, #devpop.editing .dp-foot { display:none; }
+  #devedit .fr { display:grid; grid-template-columns:1fr 1fr; gap:6px 8px; } #devedit .fr.one { grid-template-columns:1fr; }
+  #devedit label { display:flex; flex-direction:column; gap:3px; color:var(--mute); font-size:10.5px; } #devedit label span b { color:var(--fg); font-weight:500; }
+  #devedit input[type=text], #devedit input[type=number], #devedit select, #devedit textarea { width:100%; padding:0 8px; } #devedit textarea { height:44px; padding:5px 8px; resize:vertical; }
+  #devedit .cb { flex-direction:row; align-items:center; gap:6px; height:26px; color:var(--fg); }
+  #devedit .cb input { accent-color:var(--acc); margin:0; }
+  #devedit .act { display:flex; gap:6px; align-items:center; margin-top:2px; } #devedit .act .grow { flex:1; }
+  #deverr { color:var(--err); font-size:11px; min-height:14px; }
+  #devedit h4 { margin:0; font-size:12px; font-weight:600; } #devedit .hint { font-size:10.5px; color:var(--mute); }
+  /* drawer */
   #drawer { flex:none; height:220px; display:flex; flex-direction:column; border-top:1px solid var(--bd); background:#0c0e12; }
   #drawer.hidden { display:none; }
-  #grip { height:5px; cursor:row-resize; background:var(--bar); }
-  #dbar { display:flex; gap:6px; align-items:center; padding:4px 8px; border-bottom:1px solid var(--bd); }
-  #dbar .f { padding:2px 8px; } #dbar .f.on { background:#2a3243; border-color:var(--acc); }
-  #search { flex:1; background:#151821; border:1px solid var(--bd); color:var(--fg); border-radius:6px; padding:3px 8px; font:inherit; min-width:60px; }
-  #log { flex:1; overflow:auto; font:11.5px/1.45 var(--mono); padding:2px 0; }
+  #grip { height:5px; cursor:row-resize; background:var(--bar); transition:background var(--ease); } #grip:hover { background:var(--bd2); }
+  #dbar { display:flex; gap:6px; align-items:center; padding:5px 8px; border-bottom:1px solid var(--bd); }
+  #dbar .f, #dbar .tab { height:22px; padding:0 8px; color:var(--mute); background:transparent; border-color:transparent; } #dbar .f:hover, #dbar .tab:hover { color:var(--fg); background:var(--ctl2); }
+  #dbar .f.on { color:var(--fg); background:var(--ctl2); border-color:var(--bd2); } #dbar .tab { font-weight:600; } #dbar .tab.on { color:var(--fg); background:#1d2a3d; border-color:#2f4b70; }
+  #dbar .grow { flex:1; }
+  #search { flex:1; background:#151821; min-width:60px; height:22px; }
+  #count { font:11px var(--mono); font-variant-numeric:tabular-nums; }
+  #log { flex:1; overflow:auto; font:11.5px/1.5 var(--mono); padding:2px 0; }
   .row { display:flex; gap:8px; padding:1px 10px; border-bottom:1px solid #12151b; white-space:pre-wrap; word-break:break-word; }
-  .row .t { color:var(--mute); flex:none; } .row .n { color:var(--mute); flex:none; min-width:26px; text-align:right; }
+  .row .t { color:var(--mute); flex:none; font-variant-numeric:tabular-nums; } .row .n { color:var(--mute); flex:none; min-width:26px; text-align:right; }
   .row.warn { color:var(--warn); background:#1a1708; } .row.error { color:#ff8a8a; background:#1c0e0e; } .row.debug { color:var(--mute); } .row.info { color:#9cc7ff; }
-  .row.sys { color:var(--acc); justify-content:center; background:#0f1520; }
+  .row.sys { color:var(--acc2); justify-content:center; background:#0f1520; }
+  .row.event { color:var(--fg); background:#0f1a15; } .row.event .ev { color:var(--ok); flex:none; font-size:10px; text-transform:uppercase; letter-spacing:.06em; padding-top:2px; } .row.event .evn { font-weight:600; } .row.event .evd { color:var(--mute); }
   .row .stack { display:block; color:#b07a7a; font-size:10.5px; margin-top:2px; }
-  #empty { color:var(--mute); text-align:center; padding:20px; }
-  #dbar .tab { padding:2px 10px; font-weight:600; } #dbar .tab.on { background:#2a3243; border-color:var(--acc); }
-  #dbar .sep { width:1px; height:16px; background:var(--bd); }
+  #empty { color:var(--mute); text-align:center; padding:22px 20px; line-height:1.6; } #empty kbd { font:inherit; color:var(--fg); border:1px solid var(--bd2); border-radius:3px; padding:0 4px; }
   #perf { flex:1; overflow:auto; display:none; font:11.5px/1.5 var(--mono); padding:6px 10px 10px; }
   #drawer.perf #perf { display:block; } #drawer.perf #log, #drawer.perf .con { display:none; }
   .sec { display:grid; grid-template-columns:64px 1fr; gap:2px 10px; padding:4px 0; border-bottom:1px solid #12151b; }
@@ -66,50 +100,77 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   #findings li { margin:1px 0; } #findings li.warn { color:var(--warn);} #findings li.bad { color:#ff8a8a;} #findings li.info { color:#9cc7ff;}
   #findings ul { margin:0; padding-left:16px; }
   table.prof { border-collapse:collapse; width:100%; margin-top:4px; } table.prof td, table.prof th { text-align:left; padding:1px 8px 1px 0; white-space:nowrap; } table.prof th { color:var(--mute); font-weight:600; }
-  table.prof td.num, table.prof th.num { text-align:right; } table.prof td.fn { width:100%; max-width:420px; overflow:hidden; text-overflow:ellipsis; } table.prof td.src { color:var(--mute); max-width:280px; overflow:hidden; text-overflow:ellipsis; }
+  table.prof td.num, table.prof th.num { text-align:right; font-variant-numeric:tabular-nums; } table.prof td.fn { width:100%; max-width:420px; overflow:hidden; text-overflow:ellipsis; } table.prof td.src { color:var(--mute); max-width:280px; overflow:hidden; text-overflow:ellipsis; }
   .bar { display:inline-block; height:8px; background:var(--acc); vertical-align:middle; margin-right:4px; border-radius:2px; }
   #perfhint { color:var(--mute); }
+  #prof i { width:7px; height:7px; border-radius:50%; background:#04101f; } #prof.busy i { background:var(--err); animation:pulse 1s infinite; } @keyframes pulse { 50% { opacity:.3; } }
   #drawer:not(.perf) #resetm, #drawer:not(.perf) #profms, #drawer:not(.perf) #prof, #drawer:not(.perf) #perfhint { display:none; }
+  @media (max-width: 1000px) { #bar .grow .muted, #heap { display:none; } }
+  @media (max-width: 820px) { .grp.env, #spark { display:none; } #bar .grow b { max-width:110px; } }
+  @media (max-width: 640px) { #dev .dd, .tog span { display:none; } #dev { max-width:130px; } }
+  @media (prefers-reduced-motion: reduce) { *, ::before, ::after { transition:none !important; animation:none !important; } }
 </style>
 </head>
 <body>
 <div id="app">
   <div id="bar">
     <span class="dot" id="conn" title="Hook connection"></span>
-    <span class="grow"><b id="title">${escapeHtml(title)}</b> <span class="muted" id="source">${escapeHtml(source)}</span></span>
-    <span id="badges"></span>
-    <select id="vp" title="Viewport">
-      <option value="fill">Fill panel</option>
-      <option value="1920x1080">1920×1080</option><option value="1280x720">1280×720</option>
-      <option value="960x540">960×540</option><option value="800x600">800×600</option>
-      <option value="itch-embed">itch embed 960×640</option>
-      <option value="iphone">iPhone 390×844</option><option value="android">Android 412×915</option>
-      <option value="ipad">iPad 820×1180</option><option value="steamdeck">Steam Deck 1280×800</option>
-    </select>
-    <button id="rot" title="Rotate viewport">⟳</button>
-    <label class="chk" title="Reload when files in the watched folder change"><input type="checkbox" id="auto" /> auto</label>
-    <label class="chk" title="Send COOP/COEP headers (SharedArrayBuffer / Godot threads)"><input type="checkbox" id="iso" /> isolated</label>
-    <canvas id="spark" width="192" height="44"></canvas>
-    <span id="fps">-- fps</span><span id="heap"></span>
-    <button id="toggle">Console</button>
-    <button id="perfbtn" title="Frame times, hitches, WebGL counters, load timeline, findings, CPU profile">Perf</button>
-    <button id="reload" class="primary" title="Reload game (R)">↻ Reload</button>
+    <span class="grow"><b id="title">${escapeHtml(title)}</b><span class="muted" id="source">${escapeHtml(source)}</span></span>
+    <span class="grp env" id="badges"></span>
+    <span class="sep"></span>
+    <span class="grp">
+      <button id="dev" aria-haspopup="dialog" aria-expanded="false" title="Device profile: resolution, pixel ratio, user agent, touch, cores. Click to change or add your own."><span class="dn">Fill panel</span><span class="dd"></span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg></button>
+      <button id="rot" class="icon" title="Rotate (portrait / landscape)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2.5 8a5.5 5.5 0 0 1 9.4-3.9L13.5 5.7"/><path d="M13.5 2.5v3.2h-3.2"/><path d="M13.5 8a5.5 5.5 0 0 1-9.4 3.9L2.5 10.3"/><path d="M2.5 13.5v-3.2h3.2"/></svg></button>
+    </span>
+    <span class="grp">
+      <button id="auto" class="tog" aria-pressed="true" title="Reload when files in the watched folder change"><i></i><span>auto</span></button>
+      <button id="iso" class="tog" aria-pressed="false" title="Send COOP/COEP headers (SharedArrayBuffer / Godot threads). Reloads the shell."><i></i><span>isolated</span></button>
+    </span>
+    <span class="sep"></span>
+    <span class="grp">
+      <canvas id="spark" width="192" height="48" title="FPS, last 32 s"></canvas>
+      <span id="fps">-- fps</span><span id="heap"></span>
+    </span>
+    <span class="sep"></span>
+    <span class="grp">
+      <button id="toggle">Console</button>
+      <button id="perfbtn" title="Frame times, hitches, WebGL counters, load timeline, findings, CPU profile">Perf</button>
+      <button id="reload" class="primary" title="Reload game (R)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.5 2.5v3.2h-3.2"/></svg>Reload</button>
+    </span>
+  </div>
+  <div id="devpop" role="dialog" aria-label="Device profile" aria-hidden="true">
+    <div class="dp-head"><input type="search" id="devsearch" placeholder="Search devices or type 1280x720" aria-label="Search devices" /><button id="devnew" title="Create a profile of your own">New</button></div>
+    <div id="devlist" role="listbox" aria-label="Device profiles"></div>
+    <div class="dp-foot"><span class="grow muted" id="devinfo"></span><button id="devlab" title="Open this profile in the Playwright lab: real DPR/UA/touch plus CPU slowdown and network throttling">Run in lab</button></div>
+    <form id="devedit" autocomplete="off">
+      <h4 id="devedit-title">New profile</h4>
+      <div class="fr"><label><span>Name</span><input type="text" name="name" required maxlength="60" /></label><label><span>Group</span><select name="group"></select></label></div>
+      <div class="fr"><label><span>Width <b>css px</b></span><input type="number" name="width" min="120" max="7680" required /></label><label><span>Height <b>css px</b></span><input type="number" name="height" min="120" max="4320" required /></label></div>
+      <div class="fr"><label><span>Pixel ratio</span><input type="number" name="dpr" min="0.5" max="5" step="0.05" /></label><label><span>CPU slowdown <b>lab only</b></span><input type="number" name="cpu" min="1" max="20" step="0.5" /></label></div>
+      <div class="fr"><label><span>Network <b>lab only</b></span><select name="network"><option value="none">none (unthrottled)</option><option value="wifi">wifi</option><option value="4g">4g</option><option value="fast-3g">fast-3g</option><option value="slow-3g">slow-3g</option><option value="offline">offline</option></select></label><label><span>Cores · Memory GB</span><span style="display:flex;gap:6px"><input type="number" name="cores" min="1" max="64" /><input type="number" name="memoryGB" min="0.25" max="128" step="0.25" /></span></label></div>
+      <div class="fr"><label class="cb"><input type="checkbox" name="touch" /> Touch screen</label><label class="cb"><input type="checkbox" name="mobile" /> Mobile (viewport meta, UA hints)</label></div>
+      <div class="fr one"><label><span>User agent <b>optional</b></span><input type="text" name="ua" placeholder="Leave empty to keep the browser's" /></label></div>
+      <div class="fr one"><label><span>Note</span><textarea name="note" maxlength="200"></textarea></label></div>
+      <div class="hint" id="devedit-hint"></div>
+      <div id="deverr" role="alert"></div>
+      <div class="act"><button type="button" id="devcancel">Cancel</button><span class="grow"></span><button type="submit" class="primary" id="devsave">Save profile</button></div>
+    </form>
   </div>
   <div id="stage"><div id="wrap"><iframe id="game" src="${escapeHtml(gameSrc)}" allow="autoplay; fullscreen; gamepad; xr-spatial-tracking; cross-origin-isolated" allowfullscreen></iframe></div><span id="vplabel"></span></div>
   <div id="drawer">
     <div id="grip"></div>
     <div id="dbar">
       <button class="tab on" data-tab="console">Console</button><button class="tab" data-tab="perf">Perf</button><span class="sep"></span>
-      <button class="f con on" data-f="all">All</button><button class="f con" data-f="log">Log</button><button class="f con" data-f="warn">Warn</button><button class="f con" data-f="error">Errors</button>
-      <input id="search" class="con" placeholder="filter…" />
+      <button class="f con on" data-f="all">All</button><button class="f con" data-f="log">Log</button><button class="f con" data-f="warn">Warn</button><button class="f con" data-f="error">Errors</button><button class="f con" data-f="event">Events</button>
+      <input id="search" class="con" type="search" placeholder="Filter…" aria-label="Filter console" />
       <span class="muted con" id="count"></span>
       <button id="clear" class="con">Clear</button>
       <span id="perfhint" class="grow"></span>
       <button id="resetm" title="Reset hitch log and frame-time samples">Reset</button>
       <select id="profms" title="Profile duration"><option value="3000">3 s</option><option value="5000" selected>5 s</option><option value="10000">10 s</option><option value="20000">20 s</option></select>
-      <button id="prof" class="primary" title="Sample the main thread (JS Self-Profiling API) and list hot functions">● Profile</button>
+      <button id="prof" class="primary" title="Sample the main thread (JS Self-Profiling API) and list hot functions"><i></i>Profile</button>
     </div>
-    <div id="log"><div id="empty">No console output yet.</div></div>
+    <div id="log"><div id="empty">No console output yet.<br><span class="muted">console.*, errors, unhandled rejections and game events from the page appear here.</span></div></div>
     <div id="perf"><div id="perfbody" class="muted" style="padding:12px 0">Waiting for the game hook…</div></div>
   </div>
 </div>
@@ -118,7 +179,9 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   var $ = function (id) { return document.getElementById(id); };
   var game = $("game"), wrap = $("wrap"), stage = $("stage"), logEl = $("log");
   var VIEWPORTS = ${JSON.stringify(VIEWPORTS)};
-  var state = { viewport: "fill", rotated: false, autoReload: true, isolation: ${JSON.stringify(!!isolation)} };
+  var GROUPS = ${JSON.stringify(GROUP_LABELS)};
+  var state = { viewport: "fill", rotated: false, autoReload: true, isolation: ${JSON.stringify(!!isolation)}, device: null, emulation: null };
+  var devices = [], devSel = null; // devSel: id of the highlighted row in the popover
   var env = null, connected = false, loadedAt = Date.now();
   var logs = [], filter = "all", query = "", counts = { log: 0, info: 0, warn: 0, error: 0, debug: 0 };
   var fpsHist = [], fpsWindow = []; // fpsWindow: last ~60s of samples
@@ -131,20 +194,26 @@ export function renderShell({ title, source, gameSrc, isolation }) {
     if (!dims) {
       wrap.style.width = "100%"; wrap.style.height = "100%";
       game.style.width = "100%"; game.style.height = "100%"; game.style.transform = "none";
-      $("vplabel").textContent = stage.clientWidth + "×" + stage.clientHeight;
+      $("vplabel").textContent = stage.clientWidth + "\u00d7" + stage.clientHeight;
       return;
     }
     var w = state.rotated ? dims[1] : dims[0], h = state.rotated ? dims[0] : dims[1];
     var s = Math.min((stage.clientWidth - 16) / w, (stage.clientHeight - 16) / h, 1);
     game.style.width = w + "px"; game.style.height = h + "px"; game.style.transform = "scale(" + s + ")";
     wrap.style.width = Math.round(w * s) + "px"; wrap.style.height = Math.round(h * s) + "px";
-    $("vplabel").textContent = w + "×" + h + " @ " + Math.round(s * 100) + "%";
+    var em = state.emulation, txt = w + "\u00d7" + h + " @ " + Math.round(s * 100) + "%";
+    if (em) {
+      txt += " \u00b7 dpr " + em.dpr + (em.touch ? " \u00b7 touch" : "");
+      var lab = []; if (em.cpu > 1) lab.push("cpu \u00d7" + em.cpu); if (em.network && em.network !== "none" && em.network !== "wifi") lab.push(em.network);
+      $("vplabel").innerHTML = esc(txt) + (lab.length ? ' \u00b7 <span class="lab">' + esc(lab.join(" \u00b7 ") + " in lab") + "</span>" : "");
+      return;
+    }
+    $("vplabel").textContent = txt;
   }
   new ResizeObserver(applyViewport).observe(stage);
-  $("vp").onchange = function () { postState({ viewport: this.value }); };
   $("rot").onclick = function () { postState({ rotated: !state.rotated }); };
-  $("auto").onchange = function () { postState({ autoReload: this.checked }); };
-  $("iso").onchange = function () { postState({ isolation: this.checked }); };
+  $("auto").onclick = function () { postState({ autoReload: this.getAttribute("aria-pressed") !== "true" }); };
+  $("iso").onclick = function () { postState({ isolation: this.getAttribute("aria-pressed") !== "true" }); };
   $("reload").onclick = reload;
   window.addEventListener("keydown", function (e) { if ((e.key === "r" || e.key === "R") && !e.metaKey && !e.ctrlKey && e.target === document.body) reload(); });
 
@@ -158,11 +227,127 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   function setState(patch) {
     // COOP/COEP apply to this top-level document, so a change needs a full shell reload.
     if (patch.isolation !== undefined && patch.isolation !== state.isolation) { location.reload(); return; }
+    var emuChanged = patch.emulation !== undefined && JSON.stringify(patch.emulation) !== JSON.stringify(state.emulation);
     Object.assign(state, patch);
-    $("vp").value = VIEWPORTS[state.viewport] !== undefined ? state.viewport : "fill";
-    if (VIEWPORTS[state.viewport] === undefined && state.viewport.indexOf("x") > 0) { var o = document.createElement("option"); o.value = state.viewport; o.textContent = state.viewport.replace("x", "×"); $("vp").appendChild(o); $("vp").value = state.viewport; }
-    $("auto").checked = !!state.autoReload; $("iso").checked = !!state.isolation;
-    applyViewport();
+    $("auto").setAttribute("aria-pressed", String(!!state.autoReload)); $("iso").setAttribute("aria-pressed", String(!!state.isolation));
+    renderDevButton(); applyViewport();
+    if (devpop.classList.contains("open")) renderDevList();
+    // DPR/UA/touch overrides are applied by the hook at page start, so a profile change needs a game reload.
+    if (emuChanged && connected) { addLog({ level: "sys", text: state.emulation ? "\u2014 emulating " + state.emulation.name + ", reloading \u2014" : "\u2014 emulation off, reloading \u2014", t: Date.now() }); reload(); }
+  }
+
+  // ---- device profiles ----
+  var devpop = $("devpop"), devBtn = $("dev");
+  function curDevice() { for (var i = 0; i < devices.length; i++) if (devices[i].id === state.device) return devices[i]; return null; }
+  function renderDevButton() {
+    var d = curDevice(), dn = devBtn.querySelector(".dn"), dd = devBtn.querySelector(".dd");
+    if (d) { dn.textContent = d.name; dd.textContent = (state.rotated ? d.height + "\u00d7" + d.width : d.width + "\u00d7" + d.height); }
+    else if (state.viewport !== "fill") { dn.textContent = "Custom"; dd.textContent = state.viewport.replace("x", "\u00d7"); }
+    else { dn.textContent = "Fill panel"; dd.textContent = ""; }
+  }
+  function loadDevices() {
+    return fetch("/__gp/api/devices").then(function (r) { return r.json(); }).then(function (j) { devices = j.devices || []; devFile = j.userFile; renderDevButton(); if (devpop.classList.contains("open")) renderDevList(); });
+  }
+  var devFile = "";
+  function chips(d) {
+    var h = '<span class="chip">' + d.width + "\u00d7" + d.height + '</span><span class="chip">' + d.dpr + "\u00d7</span>";
+    if (d.touch) h += '<span class="chip">touch</span>';
+    if (d.cpu > 1) h += '<span class="chip lab" title="CPU slowdown, applied in the lab">cpu \u00d7' + d.cpu + "</span>";
+    if (d.network && d.network !== "none" && d.network !== "wifi") h += '<span class="chip lab" title="Network preset, applied in the lab">' + esc(d.network) + "</span>";
+    return h;
+  }
+  function renderDevList() {
+    var q = $("devsearch").value.trim().toLowerCase(), list = $("devlist"), h = "";
+    var custom = /^(\d{3,4})\s*[x\u00d7]\s*(\d{3,4})$/.exec(q);
+    var fillSel = !state.device && state.viewport === "fill";
+    if (!q) h += '<div class="dev" tabindex="0" data-vp="fill" role="option" aria-selected="' + fillSel + '"><span class="dn">Fill panel</span><span class="dd"><span class="chip">' + stage.clientWidth + "\u00d7" + stage.clientHeight + '</span><span class="chip">no emulation</span></span></div>';
+    if (custom) h += '<div class="dev" tabindex="0" data-vp="' + custom[1] + "x" + custom[2] + '" role="option" aria-selected="false"><span class="dn">Custom size</span><span class="dd"><span class="chip">' + custom[1] + "\u00d7" + custom[2] + '</span><span class="chip">no emulation</span></span></div>';
+    else if (!state.device && state.viewport !== "fill" && !q) h += '<div class="dev" tabindex="0" data-vp="' + esc(state.viewport) + '" role="option" aria-selected="true"><span class="dn">Custom size</span><span class="dd"><span class="chip">' + esc(state.viewport.replace("x", "\u00d7")) + '</span></span></div>';
+    var byGroup = {};
+    devices.forEach(function (d) {
+      if (q && (d.name + " " + d.id + " " + d.group + " " + (d.note || "")).toLowerCase().indexOf(q) < 0) return;
+      (byGroup[d.group] = byGroup[d.group] || []).push(d);
+    });
+    Object.keys(GROUPS).forEach(function (g) {
+      if (!byGroup[g]) return;
+      h += '<div class="dg">' + esc(GROUPS[g]) + "</div>";
+      byGroup[g].forEach(function (d) {
+        var sel = d.id === state.device;
+        h += '<div class="dev" tabindex="0" data-id="' + esc(d.id) + '" role="option" aria-selected="' + sel + '" title="' + esc(d.note || "") + '"><span class="dn">' + esc(d.name) + (d.user ? '<span class="tag user">' + (d.overrides ? "edited" : "yours") + "</span>" : "") + '</span><span class="dd">' + chips(d) + "</span>" +
+          '<span class="da">' + (d.user ? '<button class="icon" data-act="edit" title="Edit"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M11.5 2.5l2 2L5 13H3v-2z"/></svg></button>' : '<button class="icon" data-act="dup" title="Duplicate and edit"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-2a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2"/></svg></button>') +
+          (d.user ? '<button class="icon danger" data-act="del" title="' + (d.overrides ? "Revert to the built-in profile" : "Delete") + '"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 4.5h10M6.5 4.5v-1a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1M4.5 4.5l.7 8a1 1 0 0 0 1 .9h3.6a1 1 0 0 0 1-.9l.7-8"/></svg></button>' : "") + "</span></div>";
+      });
+    });
+    if (!h) h = '<div id="empty">No profile matches. Type a size like <kbd>1280x720</kbd> or create one with <kbd>New</kbd>.</div>';
+    list.innerHTML = h;
+    var d = curDevice();
+    $("devinfo").textContent = d ? (d.note || "") + (d.cpu > 1 || (d.network && d.network !== "none" && d.network !== "wifi") ? (d.note ? " \u00b7 " : "") + "CPU/network throttling only applies in the lab" : "") : "Profiles you save live in " + devFile;
+    $("devlab").disabled = !d && state.viewport === "fill";
+  }
+  function openDevPop() {
+    var r = devBtn.getBoundingClientRect();
+    devpop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 368)) + "px";
+    devpop.classList.remove("editing"); devpop.classList.add("open"); devpop.setAttribute("aria-hidden", "false"); devBtn.setAttribute("aria-expanded", "true");
+    renderDevList(); loadDevices(); setTimeout(function () { $("devsearch").focus(); }, 0);
+  }
+  function closeDevPop() { devpop.classList.remove("open", "editing"); devpop.setAttribute("aria-hidden", "true"); devBtn.setAttribute("aria-expanded", "false"); }
+  devBtn.onclick = function () { devpop.classList.contains("open") ? closeDevPop() : openDevPop(); };
+  window.addEventListener("resize", function () { if (devpop.classList.contains("open")) { var r = devBtn.getBoundingClientRect(); devpop.style.left = Math.max(8, Math.min(r.left, window.innerWidth - 368)) + "px"; } });
+  document.addEventListener("mousedown", function (e) { if (devpop.classList.contains("open") && !devpop.contains(e.target) && !devBtn.contains(e.target)) closeDevPop(); });
+  window.addEventListener("keydown", function (e) { if (e.key === "Escape" && devpop.classList.contains("open")) { devpop.classList.contains("editing") ? cancelEdit() : closeDevPop(); } });
+  $("devsearch").oninput = renderDevList;
+  $("devsearch").onkeydown = function (e) { if (e.key === "Enter") { var first = $("devlist").querySelector(".dev"); if (first) first.click(); } };
+  $("devlist").onkeydown = function (e) { if ((e.key === "Enter" || e.key === " ") && e.target.classList.contains("dev")) { e.preventDefault(); e.target.click(); } };
+  $("devlist").onclick = function (e) {
+    var act = e.target.closest("[data-act]"), row = e.target.closest(".dev");
+    if (!row) return;
+    if (act) { e.stopPropagation(); var d = byId(row.dataset.id); if (act.dataset.act === "del") return deleteDevice(d); return editDevice(d, act.dataset.act === "dup"); }
+    if (row.dataset.vp) postState({ device: null, viewport: row.dataset.vp }); else postState({ device: row.dataset.id });
+    closeDevPop();
+  };
+  function byId(id) { for (var i = 0; i < devices.length; i++) if (devices[i].id === id) return devices[i]; return null; }
+  $("devlab").onclick = function () {
+    var d = curDevice(); var btn = this; btn.disabled = true; btn.textContent = "Opening lab\u2026";
+    fetch("/__gp/api/lab/open", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ device: d ? d.id : null, landscape: state.rotated }) })
+      .then(function (r) { return r.json(); }).then(function (j) { addLog({ level: "sys", text: j.error ? "\u2014 lab failed: " + j.error + " \u2014" : "\u2014 lab opened" + (d ? " as " + d.name : "") + (j.cpu > 1 ? " \u00b7 cpu \u00d7" + j.cpu : "") + (j.network ? " \u00b7 " + (j.network.preset || "throttled") : "") + " \u2014", t: Date.now() }); })
+      .catch(function (e) { addLog({ level: "sys", text: "\u2014 lab failed: " + e.message + " \u2014", t: Date.now() }); })
+      .then(function () { btn.disabled = false; btn.textContent = "Run in lab"; closeDevPop(); });
+  };
+  // editor
+  var form = $("devedit"), editing = null;
+  (function () { var sel = form.elements.group; Object.keys(GROUPS).forEach(function (g) { var o = document.createElement("option"); o.value = g; o.textContent = GROUPS[g]; sel.appendChild(o); }); })();
+  function editDevice(d, dup) {
+    editing = d && !dup ? d.id : null;
+    var src = d || { name: "", group: "custom", width: 1280, height: 720, dpr: 1, cpu: 1, network: "none", cores: 8, memoryGB: 8, touch: false, mobile: false, ua: "", note: "" };
+    $("devedit-title").textContent = d ? (dup ? "Duplicate " + d.name : "Edit " + d.name) : "New profile";
+    $("devedit-hint").textContent = d && !dup && d.seeded ? "This is a built-in profile; saving stores your version on top of it (revert with the trash icon)." : dup ? "Saved as a new profile of your own." : "Saved to " + devFile + " and available to the CLI, MCP tools and exports.";
+    ["name", "width", "height", "dpr", "cpu", "cores", "memoryGB", "ua", "note"].forEach(function (k) { form.elements[k].value = src[k] == null ? "" : src[k]; });
+    if (dup) form.elements.name.value = src.name + " copy";
+    form.elements.group.value = src.group || "custom"; form.elements.network.value = src.network || "none";
+    form.elements.touch.checked = !!src.touch; form.elements.mobile.checked = !!src.mobile;
+    $("deverr").textContent = "";
+    devpop.classList.add("editing"); setTimeout(function () { form.elements.name.focus(); form.elements.name.select(); }, 0);
+  }
+  function cancelEdit() { devpop.classList.remove("editing"); setTimeout(function () { $("devsearch").focus(); }, 0); }
+  $("devnew").onclick = function () { editDevice(null, false); };
+  $("devcancel").onclick = cancelEdit;
+  form.onsubmit = function (e) {
+    e.preventDefault();
+    var body = { id: editing || undefined, group: form.elements.group.value, network: form.elements.network.value, touch: form.elements.touch.checked, mobile: form.elements.mobile.checked };
+    ["name", "width", "height", "dpr", "cpu", "cores", "memoryGB", "ua", "note"].forEach(function (k) { var v = form.elements[k].value; if (v !== "") body[k] = v; });
+    if (!editing) { var seeded = byId(slug(body.name)); if (seeded && !seeded.user && seeded.name !== body.name) body.id = slug(body.name) + "-2"; }
+    $("devsave").disabled = true;
+    fetch("/__gp/api/devices", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).then(function (r) { return r.json(); }).then(function (j) {
+      if (j.error) { $("deverr").textContent = j.error; return; }
+      devices = j.devices; renderDevButton(); closeDevPop();
+      if (!editing || j.saved.id !== state.device) postState({ device: j.saved.id });
+      addLog({ level: "sys", text: "\u2014 saved device profile " + j.saved.name + " \u2014", t: Date.now() });
+    }).catch(function (err) { $("deverr").textContent = err.message; }).then(function () { $("devsave").disabled = false; });
+  };
+  function slug(n) { return String(n).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "device"; }
+  function deleteDevice(d) {
+    if (!d || !confirm(d.overrides ? "Revert \u201c" + d.name + "\u201d to the built-in profile?" : "Delete profile \u201c" + d.name + "\u201d?")) return;
+    fetch("/__gp/api/devices?id=" + encodeURIComponent(d.id), { method: "DELETE" }).then(function (r) { return r.json(); }).then(function (j) { if (j.devices) devices = j.devices; renderDevButton(); renderDevList(); });
   }
 
   // ---- badges / env ----
@@ -173,7 +358,9 @@ export function renderShell({ title, source, gameSrc, isolation }) {
     add(env.crossOriginIsolated ? "isolated" : "not isolated", env.crossOriginIsolated ? "ok" : "", "crossOriginIsolated=" + env.crossOriginIsolated + " · SharedArrayBuffer=" + env.sharedArrayBuffer);
     if (env.webgl) add(env.webgl.api, "ok", env.webgl.renderer + " · max tex " + env.webgl.maxTextureSize); else add("no WebGL", "bad");
     if (env.webgpu) add("WebGPU", "ok");
-    add("dpr " + env.devicePixelRatio, "");
+    var emu = env.emulation;
+    if (emu && emu.applied && emu.applied.length) add("as " + emu.name, "acc", "Emulating " + emu.name + ": " + emu.applied.join(", ") + (emu.labOnly && emu.labOnly.length ? " \u00b7 lab only: " + emu.labOnly.join(", ") : ""));
+    else add("dpr " + env.devicePixelRatio, "", env.userAgent || "");
   }
 
   // ---- fps ----
@@ -213,6 +400,7 @@ export function renderShell({ title, source, gameSrc, isolation }) {
       drawCallsPerFrame: fpsWindow.length ? fpsWindow[fpsWindow.length - 1].drawCalls : null,
       console: counts, env: env,
       viewport: { preset: state.viewport, rotated: state.rotated, iframeCss: [game.clientWidth, game.clientHeight], stage: [stage.clientWidth, stage.clientHeight] },
+      device: state.device, emulation: state.emulation,
       isolationRequested: state.isolation, autoReload: state.autoReload,
     };
   }
@@ -223,8 +411,9 @@ export function renderShell({ title, source, gameSrc, isolation }) {
     if (e.level === "sys") return true;
     if (filter === "warn" && e.level !== "warn") return false;
     if (filter === "error" && e.level !== "error") return false;
+    if (filter === "event" && e.level !== "event") return false;
     if (filter === "log" && (e.level === "warn" || e.level === "error")) return false;
-    if (query && e.text.toLowerCase().indexOf(query) < 0) return false;
+    if (query && (e.text + " " + (e.name || "")).toLowerCase().indexOf(query) < 0) return false;
     return true;
   }
   function rowFor(e) {
@@ -232,7 +421,9 @@ export function renderShell({ title, source, gameSrc, isolation }) {
     if (e.level === "sys") { r.textContent = e.text; return r; }
     var t = document.createElement("span"); t.className = "t"; t.textContent = fmtTime(e.t);
     var n = document.createElement("span"); n.className = "n"; n.textContent = e.count > 1 ? "×" + e.count : "";
-    var m = document.createElement("span"); m.textContent = e.text;
+    var m = document.createElement("span");
+    if (e.level === "event") { var l = document.createElement("span"); l.className = "ev"; l.textContent = "event"; var nm = document.createElement("span"); nm.className = "evn"; nm.textContent = e.name; var dd = document.createElement("span"); dd.className = "evd"; dd.textContent = e.text ? " " + e.text : ""; r.appendChild(t); r.appendChild(n); r.appendChild(l); r.appendChild(nm); r.appendChild(dd); e.row = r; return r; }
+    m.textContent = e.text;
     if (e.stack) { var s = document.createElement("span"); s.className = "stack"; s.textContent = String(e.stack).split("\\n").slice(1, 5).join("\\n"); m.appendChild(s); }
     r.appendChild(t); r.appendChild(n); r.appendChild(m);
     e.row = r; return r;
@@ -241,7 +432,7 @@ export function renderShell({ title, source, gameSrc, isolation }) {
     logEl.innerHTML = "";
     var shown = 0;
     for (var i = 0; i < logs.length; i++) if (matches(logs[i])) { logEl.appendChild(rowFor(logs[i])); shown++; }
-    if (!shown) { var em = document.createElement("div"); em.id = "empty"; em.textContent = logs.length ? "Nothing matches the filter." : "No console output yet."; logEl.appendChild(em); }
+    if (!shown) { var em = document.createElement("div"); em.id = "empty"; em.innerHTML = logs.length ? "Nothing matches the filter." : 'No console output yet.<br><span class="muted">console.*, errors, unhandled rejections and game events from the page appear here.</span>'; logEl.appendChild(em); }
     logEl.scrollTop = logEl.scrollHeight;
     updateCount();
   }
@@ -253,13 +444,13 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   }
   function addLog(e) {
     var last = logs[logs.length - 1];
-    if (last && last.level === e.level && last.text === e.text && e.level !== "sys") {
+    if (last && last.level === e.level && last.text === e.text && last.name === e.name && e.level !== "sys") {
       last.count = (last.count || 1) + 1; last.t = e.t;
       if (last.row) { last.row.children[1].textContent = "×" + last.count; last.row.children[0].textContent = fmtTime(e.t); }
       return;
     }
     e.count = 1; logs.push(e);
-    if (e.level !== "sys") counts[e.level] = (counts[e.level] || 0) + 1;
+    if (e.level !== "sys" && e.level !== "event") counts[e.level] = (counts[e.level] || 0) + 1;
     if (logs.length > MAXLOGS) { var gone = logs.shift(); if (gone.row) gone.row.remove(); }
     if (matches(e)) {
       var em = $("empty"); if (em) em.remove();
@@ -469,9 +660,9 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   function runProfile() {
     if (perf.profiling || !connected) return;
     var ms = Number($("profms").value) || 5000;
-    perf.profiling = true; $("prof").textContent = "● " + (ms / 1000) + " s…"; $("prof").disabled = true; renderPerf();
+    perf.profiling = true; $("prof").classList.add("busy"); $("prof").lastChild.textContent = (ms / 1000) + " s\u2026"; $("prof").disabled = true; renderPerf();
     askGame("profile", { durationMs: ms }, ms + 10000).then(function (p) { perf.profile = p; }).catch(function (e) { perf.profile = { supported: false, reason: "Profile failed: " + e.message }; })
-      .then(function () { perf.profiling = false; $("prof").textContent = "● Profile"; $("prof").disabled = false; renderPerf(); });
+      .then(function () { perf.profiling = false; $("prof").classList.remove("busy"); $("prof").lastChild.textContent = "Profile"; $("prof").disabled = false; renderPerf(); });
   }
 
   // ---- messages from the game hook ----
@@ -484,7 +675,7 @@ export function renderShell({ title, source, gameSrc, isolation }) {
       addLog({ level: "sys", text: "— page loaded " + new Date().toLocaleTimeString() + (env.crossOriginIsolated ? " · isolated" : "") + " —", t: Date.now() });
     } else if (m.type === "console") addLog({ level: m.level, text: m.text, stack: m.stack, t: m.t });
     else if (m.type === "fps") onFps(m);
-    else if (m.type === "game_event") { perf.events.push(m); if (perf.events.length > 30) perf.events.shift(); addLog({ level: "log", text: "\u25c6 " + m.name + (m.data != null ? " " + JSON.stringify(m.data) : ""), t: Date.now() }); if (perf.tab === "perf") renderPerf(); }
+    else if (m.type === "game_event") { perf.events.push(m); if (perf.events.length > 30) perf.events.shift(); addLog({ level: "event", name: m.name, text: m.data != null ? JSON.stringify(m.data) : "", t: Date.now() }); if (perf.tab === "perf") renderPerf(); }
     else if (m.type === "result") {
       var local = uiPending[m.id];
       if (local) { delete uiPending[m.id]; clearTimeout(local.timer); m.ok ? local.resolve(m.value) : local.reject(new Error(m.error || "failed")); }
@@ -511,12 +702,13 @@ export function renderShell({ title, source, gameSrc, isolation }) {
           var lvl = cmd.level || "all", limit = cmd.limit || 200, q = (cmd.query || "").toLowerCase();
           var src = logs.filter(function (e) {
             if (e.level === "sys") return lvl === "all" && !q;
+            if (e.level === "event") { if (lvl === "error" || lvl === "warn") return false; return !q || (e.name + " " + e.text).toLowerCase().indexOf(q) >= 0; }
             if (lvl === "error" && e.level !== "error") return false;
             if (lvl === "warn" && e.level !== "warn" && e.level !== "error") return false;
             if (q && e.text.toLowerCase().indexOf(q) < 0) return false;
             return true;
           });
-          var out = src.slice(-limit).map(function (e) { return { t: new Date(e.t).toISOString().slice(11, 23), level: e.level, text: e.text, count: e.count > 1 ? e.count : undefined, stack: e.stack ? String(e.stack).split("\\n").slice(0, 6).join("\\n") : undefined }; });
+          var out = src.slice(-limit).map(function (e) { return { t: new Date(e.t).toISOString().slice(11, 23), level: e.level, text: e.level === "event" ? e.name + (e.text ? " " + e.text : "") : e.text, count: e.count > 1 ? e.count : undefined, stack: e.stack ? String(e.stack).split("\\n").slice(0, 6).join("\\n") : undefined }; });
           var res = { entries: out, returned: out.length, matched: src.length, totals: counts };
           if (cmd.clear) clearLogs();
           return sendResult(cmd.id, true, res);
@@ -539,7 +731,8 @@ export function renderShell({ title, source, gameSrc, isolation }) {
     reload();
   });
   es.addEventListener("hint", function (e) { addLog({ level: "sys", text: JSON.parse(e.data).text, t: Date.now() }); });
-  applyViewport();
+  applyViewport(); loadDevices();
+  fetch("/__gp/api/info").then(function (r) { return r.json(); }).then(function (j) { if (j && j.ui) setState(j.ui); }).catch(function () {});
 })();
 </script>
 </body>

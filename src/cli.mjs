@@ -12,16 +12,19 @@ const { version } = createRequire(import.meta.url)("../package.json");
 const HELP = `gamelab v${version} — test lab for HTML5/WebGL games (Godot, Unity, Phaser, PixiJS, Three.js …)
 
 Usage:
-  gamelab serve  [dir|url] [--isolation auto|on|off] [--port N] [--out DIR] [--no-watch] [--open]
+  gamelab serve  [dir|url] [--isolation auto|on|off] [--port N] [--out DIR] [--no-watch] [--open] [--profile ID]
       Serve a build (or proxy a dev server) with the hook injected; prints the shell URL.
       The shell (any browser tab) shows FPS, console, and a Perf tab: frame times, hitches,
       WebGL counters, load timeline, findings, and a CPU profile of hot functions. --open launches it.
-  gamelab run    <scenario.json> [dir|url] [--device "iPhone 14"] [--landscape] [--cpu 4]
-                 [--network slow-3g] [--headless] [--width W --height H] [--video] [--har]
+  gamelab run    <scenario.json> [dir|url] [--profile budget-android] [--device "iPhone 14"] [--landscape]
+                 [--cpu 4] [--network slow-3g] [--headless] [--width W --height H] [--video] [--har]
                  [--trace] [--out DIR] [--json]
       Open the game in a Playwright Chromium, run the scenario, print the report. Exit 1 on failure.
-  gamelab export <scenario.json> [dir|url] --out DIR [--device X] [--viewport WxH] [--port N] [--overwrite]
+  gamelab export <scenario.json> [dir|url] --out DIR [--profile ID] [--device X] [--viewport WxH] [--port N] [--overwrite]
       Write a standalone Playwright project replaying the scenario (for CI).
+  gamelab devices [--json]
+      List device profiles: 16 seeded (phones, tablets, handhelds, desktops, portal embeds) plus
+      your own from ~/.gamelab/devices.json (edit them in the shell's device menu or with save_device).
   gamelab mcp    [--out DIR]
       Run as an MCP server over stdio (for Claude Code, Cursor, Copilot CLI, Codex, Gemini CLI …).
   gamelab tools
@@ -37,7 +40,7 @@ const OPTIONS = {
     isolation: { type: "string" }, port: { type: "string" }, out: { type: "string" }, watch: { type: "boolean", default: true },
     device: { type: "string" }, landscape: { type: "boolean" }, cpu: { type: "string" }, network: { type: "string" },
     headless: { type: "boolean" }, width: { type: "string" }, height: { type: "string" }, video: { type: "boolean" }, har: { type: "boolean" },
-    trace: { type: "boolean" }, json: { type: "boolean" }, viewport: { type: "string" }, overwrite: { type: "boolean" },
+    trace: { type: "boolean" }, json: { type: "boolean" }, viewport: { type: "string" }, overwrite: { type: "boolean" }, profile: { type: "string" },
     open: { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "v" },
 };
 
@@ -75,8 +78,8 @@ export async function main(argv = process.argv.slice(2)) {
 
     switch (cmd) {
         case "serve": {
-            const p = await openPreview({ ...sourceInput(rest[0]), isolation: o.isolation, watch: o.watch }, { ...common, port: o.port ? Number(o.port) : 0 });
-            console.log(`Shell:  ${p.shellUrl}\nGame:   ${p.gameUrl}\nSource: ${p.source}${p.ui.isolation ? "  (COOP/COEP on)" : ""}\nCtrl-C to stop.`);
+            const p = await openPreview({ ...sourceInput(rest[0]), isolation: o.isolation, watch: o.watch, device: o.profile }, { ...common, port: o.port ? Number(o.port) : 0 });
+            console.log(`Shell:  ${p.shellUrl}\nGame:   ${p.gameUrl}\nSource: ${p.source}${p.ui.isolation ? "  (COOP/COEP on)" : ""}${p.ui.emulation ? `\nDevice: ${p.ui.emulation.name} (${p.ui.viewport})` : ""}\nCtrl-C to stop.`);
             if (o.open) openInBrowser(p.shellUrl);
             return keepAlive(p);
         }
@@ -87,7 +90,7 @@ export async function main(argv = process.argv.slice(2)) {
             let code = 1;
             try {
                 await callTool(p, "lab_open", {
-                    device: o.device, landscape: o.landscape, headless: o.headless, video: o.video, har: o.har,
+                    profile: o.profile, device: o.device, landscape: o.landscape, headless: o.headless, video: o.video, har: o.har,
                     cpu: o.cpu ? Number(o.cpu) : undefined, network: o.network,
                     width: o.width ? Number(o.width) : undefined, height: o.height ? Number(o.height) : undefined,
                 });
@@ -110,7 +113,7 @@ export async function main(argv = process.argv.slice(2)) {
             if (!o.out) throw new GameLabError("usage", "export needs --out DIR");
             const p = await openPreview({ ...sourceInput(rest[1]), watch: false }, common);
             try {
-                const r = await callTool(p, "export_test", { ...scenario, outDir: o.out, device: o.device, viewport: o.viewport, port: o.port ? Number(o.port) : undefined, overwrite: o.overwrite });
+                const r = await callTool(p, "export_test", { ...scenario, outDir: o.out, profile: o.profile, device: o.device, viewport: o.viewport, port: o.port ? Number(o.port) : undefined, overwrite: o.overwrite });
                 console.log(JSON.stringify(r, null, 2));
             } finally { await p.close(); }
             return;
@@ -119,6 +122,19 @@ export async function main(argv = process.argv.slice(2)) {
         case "mcp": {
             const { startMcpServer } = await import("./mcp.mjs");
             return startMcpServer({ filesDir: outDir(o.out), cwd: process.cwd(), log: stderr });
+        }
+
+        case "devices": {
+            const { allDevices, describeDevice, GROUP_LABELS, USER_DEVICES_PATH } = await import("./devices.mjs");
+            const list = await allDevices();
+            if (o.json) return console.log(JSON.stringify({ userFile: USER_DEVICES_PATH(), devices: list }, null, 2));
+            let group = null;
+            for (const d of list) {
+                if (d.group !== group) { group = d.group; console.log(`\n${GROUP_LABELS[group] ?? group}`); }
+                console.log(`  ${d.id.padEnd(20)} ${d.name.padEnd(22)} ${describeDevice(d)}${d.user ? d.overrides ? "  (edited)" : "  (yours)" : ""}`);
+            }
+            console.log(`\nUser profiles: ${USER_DEVICES_PATH()}\nUse: gamelab serve . --profile <id> · gamelab run s.json . --profile <id> · gamelab export … --profile <id>`);
+            return;
         }
 
         case "tools":

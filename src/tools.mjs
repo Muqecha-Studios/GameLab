@@ -5,6 +5,7 @@
 import path from "node:path";
 import { GameLabError, VIEWPORTS, CMD_TIMEOUT_MS, expandHome, labCall } from "./preview.mjs";
 import { NETWORK_PRESET_NAMES } from "./lab.mjs";
+import { allDevices, resolveDevice, upsertUserDevice, deleteUserDevice, labOptionsFor, describeDevice, DEVICE_GROUPS, USER_DEVICES_PATH } from "./devices.mjs";
 import { runScenario, STEP_SCHEMA, STEP_KINDS } from "./scenario.mjs";
 import { exportTest } from "./export.mjs";
 
@@ -26,6 +27,7 @@ export const OPEN_INPUT_SCHEMA = {
         watch: { type: ["boolean", "string"], description: "Auto-reload when files change. true (default in dir mode) watches dir; a path watches that folder instead (useful with url mode); false disables." },
         isolation: { type: "string", enum: ["auto", "on", "off"], description: "Send COOP/COEP headers so SharedArrayBuffer works (needed by Godot thread-enabled exports). auto = on when the folder looks like a wasm export." },
         viewport: { type: "string", description: `Initial viewport preset for the shell UI: ${Object.keys(VIEWPORTS).join(", ")}, or WIDTHxHEIGHT.` },
+        device: { type: "string", description: "Initial device profile (id or name from list_devices, e.g. 'iphone-15', 'Budget Android'): sets the resolution and emulates DPR/UA/touch/cores in the panel." },
         title: { type: "string", description: "Optional title." },
     },
     additionalProperties: false,
@@ -169,10 +171,11 @@ export const TOOLS = [
     },
     {
         name: "set_viewport",
-        description: `Resize the game frame in the shell UI to a device/resolution preset (${Object.keys(VIEWPORTS).join(", ")}) or WIDTHxHEIGHT, scaled to fit. Optionally rotate. (Panel only; for the lab pass device/width/height to lab_open.)`,
-        inputSchema: { type: "object", properties: { viewport: { type: "string" }, rotated: { type: "boolean" } }, additionalProperties: false },
-        handler: (p, i) => {
+        description: `Resize the game frame in the shell UI. Pass a device profile (id/name from list_devices) to also emulate its DPR, user agent, touch and core count — the game reloads to pick that up. Or pass a bare viewport preset (${Object.keys(VIEWPORTS).join(", ")}) / WIDTHxHEIGHT for a resize only. Optionally rotate. (Panel only; for CPU/network throttling open the lab with lab_open { profile }.)`,
+        inputSchema: { type: "object", properties: { device: { type: ["string", "null"], description: "Device profile id or name; null clears the profile." }, viewport: { type: "string" }, rotated: { type: "boolean" } }, additionalProperties: false },
+        handler: async (p, i) => {
             const patch = {};
+            if (i && "device" in i) { if (typeof i.rotated === "boolean") patch.rotated = i.rotated; return p.setDevice(i.device, patch); }
             if (i?.viewport) {
                 const v = i.viewport.toLowerCase();
                 if (!(v in VIEWPORTS) && !/^\d{2,5}x\d{2,5}$/.test(v)) throw new GameLabError("bad_viewport", `Unknown viewport "${i.viewport}". Use ${Object.keys(VIEWPORTS).join(", ")} or WIDTHxHEIGHT.`);
@@ -196,6 +199,35 @@ export const TOOLS = [
 
     // ---- lab: Playwright-driven Chromium -----------------------------------
     {
+        name: "list_devices",
+        description: "List device profiles (seeded + user-defined): resolution, DPR, touch, mobile UA, CPU slowdown, network preset. Use an id with set_viewport { device }, lab_open { profile }, open { device } or `gamelab run --profile`.",
+        inputSchema: { type: "object", properties: { group: { type: "string", enum: DEVICE_GROUPS } }, additionalProperties: false },
+        handler: async (_p, i) => {
+            const list = (await allDevices()).filter((d) => !i?.group || d.group === i.group);
+            return { userFile: USER_DEVICES_PATH(), devices: list.map((d) => ({ ...d, summary: describeDevice(d) })) };
+        },
+    },
+    {
+        name: "save_device",
+        description: `Create or update a user device profile (stored in ${USER_DEVICES_PATH().replace(process.env.HOME || "", "~")}; a seeded id is overridden, not lost). Fields: name (required), width, height (required), dpr, touch, mobile, ua, cpu (1 = none), network (${NETWORK_PRESET_NAMES.join(", ")}), cores, memoryGB, group, note.`,
+        inputSchema: {
+            type: "object",
+            properties: {
+                id: { type: "string" }, name: { type: "string" }, group: { type: "string", enum: DEVICE_GROUPS },
+                width: { type: "integer" }, height: { type: "integer" }, dpr: { type: "number" }, touch: { type: "boolean" }, mobile: { type: "boolean" },
+                ua: { type: "string" }, cpu: { type: "number" }, network: { type: "string" }, cores: { type: "integer" }, memoryGB: { type: "number" }, note: { type: "string" }, pw: { type: "string", description: "Closest Playwright device descriptor for the lab (optional)." },
+            },
+            required: ["name", "width", "height"], additionalProperties: false,
+        },
+        handler: async (p, i) => { try { const d = await upsertUserDevice(i); if (p?.ui?.device === d.id) await p.setDevice(d.id); return { saved: d, summary: describeDevice(d) }; } catch (err) { throw new GameLabError("bad_device", err.message); } },
+    },
+    {
+        name: "delete_device",
+        description: "Delete a user device profile by id. Deleting an override of a seeded profile restores the seed.",
+        inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"], additionalProperties: false },
+        handler: async (_p, i) => ({ id: i.id, removed: await deleteUserDevice(i.id) }),
+    },
+    {
         name: "lab_open",
         description: "Launch a real Chromium (Playwright) loading the game. Gives trusted input, device emulation (viewport/DPR/touch/UA), CPU & network throttling, Chrome performance traces, Playwright traces, video and HAR recording, and a virtual gamepad. Headed by default so the game gets a real GPU. Re-opening replaces the previous lab browser.",
         inputSchema: {
@@ -215,10 +247,20 @@ export const TOOLS = [
                 cpu: { type: "number", minimum: 1, maximum: 20, description: "CPU slowdown factor from the start (4 ≈ mid-range phone, 6 ≈ low-end)." },
                 network: { type: ["string", "object"], description: `Network preset (${NETWORK_PRESET_NAMES.join(", ")}) or {downloadKbps, uploadKbps, latencyMs, offline}.` },
                 timeoutMs: { type: "integer", description: "Page load timeout (default 60000)." },
+                profile: { type: "string", description: "gamelab device profile (id or name from list_devices). Applies its resolution, DPR, touch, UA, CPU slowdown and network preset; explicit fields above override it." },
             },
             additionalProperties: false,
         },
-        handler: async (p, i) => { const lab = await p.labFor(); return labCall(() => lab.open(i ?? {})); },
+        handler: async (p, i) => {
+            let input = { ...(i ?? {}) };
+            if (input.profile) {
+                const d = await resolveDevice(input.profile);
+                if (!d) throw new GameLabError("bad_device", `Unknown device profile "${input.profile}". Use list_devices.`);
+                const { profile, ...rest } = input;
+                input = { ...labOptionsFor(d, { landscape: !!rest.landscape }), ...Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined)), profile: d.id };
+            }
+            const lab = await p.labFor(); return labCall(() => lab.open(input));
+        },
     },
     {
         name: "lab_close",
@@ -312,6 +354,7 @@ export const TOOLS = [
                 steps: { type: "array", items: STEP_SCHEMA, minItems: 1 },
                 outDir: { type: "string", description: "Where to write the project (e.g. the game repo's tests/web folder). Default: <filesDir>/playwright." },
                 device: { type: "string", description: "Playwright device to run under (default Desktop Chrome)." },
+                profile: { type: "string", description: "gamelab device profile (id/name from list_devices): sets viewport, DPR, UA, touch and adds a throttle step for its CPU/network." },
                 viewport: { type: "string", description: "WIDTHxHEIGHT override." },
                 port: { type: "integer", description: "Local port for the generated server (default 4173)." },
                 overwrite: { type: "boolean" },
@@ -322,7 +365,10 @@ export const TOOLS = [
         handler: async (p, i) => {
             const outDir = i.outDir ? expandHome(i.outDir) : path.join(await p.filesDir(), "playwright");
             const vp = i.viewport && /^(\d+)x(\d+)$/.exec(i.viewport);
+            let profile;
+            if (i.profile) { profile = await resolveDevice(i.profile); if (!profile) throw new GameLabError("bad_device", `Unknown device profile "${i.profile}". Use list_devices.`); }
             return exportTest({
+                profile,
                 scenario: { name: i.name, steps: i.steps }, outDir, overwrite: !!i.overwrite, port: i.port,
                 mode: p.mode, dir: p.dir, entry: p.entry, url: p.target?.href, isolation: p.ui.isolation,
                 device: i.device, viewport: vp ? { width: Number(vp[1]), height: Number(vp[2]) } : undefined,

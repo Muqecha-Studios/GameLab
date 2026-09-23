@@ -10,6 +10,26 @@ export const HOOK_JS = String.raw`(() => {
   const post = (msg) => { try { parent.postMessage(Object.assign({ __gp: 1 }, msg), "*"); } catch (_) {} };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+  // ---- device emulation (set by the server as window.__gpEmu) --------------
+  // Runs before any game script: fakes what a page can know about its device
+  // (DPR, UA, touch, cores, memory, screen). CPU/network need the lab.
+  const emu = window.__gpEmu && typeof window.__gpEmu === "object" ? window.__gpEmu : null;
+  const applied = [];
+  if (emu) {
+    const def = (obj, key, value) => { try { Object.defineProperty(obj, key, { get: () => value, configurable: true }); return true; } catch (_) { return false; } };
+    if (emu.dpr && emu.dpr !== window.devicePixelRatio && def(window, "devicePixelRatio", emu.dpr)) applied.push("dpr " + emu.dpr);
+    if (emu.ua && def(Navigator.prototype, "userAgent", emu.ua)) {
+      applied.push("ua");
+      const plat = /iPhone|iPad/.test(emu.ua) ? (/iPad/.test(emu.ua) ? "iPad" : "iPhone") : /Android/.test(emu.ua) ? "Linux armv8l" : /CrOS|X11/.test(emu.ua) ? "Linux x86_64" : null;
+      if (plat) def(Navigator.prototype, "platform", plat);
+      if (emu.mobile) def(Navigator.prototype, "userAgentData", undefined);
+    }
+    if (emu.touch) { def(Navigator.prototype, "maxTouchPoints", 5); if (!("ontouchstart" in window)) { try { window.ontouchstart = null; } catch (_) {} } applied.push("touch"); }
+    if (emu.cores && def(Navigator.prototype, "hardwareConcurrency", emu.cores)) applied.push(emu.cores + " cores");
+    if (emu.memoryGB && "deviceMemory" in Navigator.prototype) def(Navigator.prototype, "deviceMemory", Math.min(8, Math.max(0.25, Math.pow(2, Math.round(Math.log2(emu.memoryGB))))));
+    if (emu.width && emu.height && typeof Screen !== "undefined") { def(Screen.prototype, "width", emu.width); def(Screen.prototype, "height", emu.height); def(Screen.prototype, "availWidth", emu.width); def(Screen.prototype, "availHeight", emu.height); }
+  }
+
   // ---- serialization -----------------------------------------------------
   function serialize(v, depth, seen) {
     depth = depth || 0; seen = seen || new WeakSet();
@@ -152,6 +172,9 @@ export const HOOK_JS = String.raw`(() => {
       webgl: glInfo(),
       devicePixelRatio: devicePixelRatio,
       hardwareConcurrency: navigator.hardwareConcurrency,
+      userAgent: navigator.userAgent,
+      touch: navigator.maxTouchPoints > 0,
+      emulation: emu ? { id: emu.id, name: emu.name, applied: applied, labOnly: [emu.cpu > 1 ? "cpu \u00d7" + emu.cpu : null, emu.network && emu.network !== "none" && emu.network !== "wifi" ? emu.network : null].filter(Boolean) } : null,
     },
   });
 

@@ -9,5 +9,6 @@ export { runScenario } from "./scenario.mjs";
 export { exportTest } from "./export.mjs";
 export { HOOK_JS } from "./hook.mjs";
 export { renderShell } from "./shell.mjs";
+export { SEEDED_DEVICES, DEVICE_GROUPS, GROUP_LABELS, USER_DEVICES_PATH, allDevices, resolveDevice, upsertUserDevice, deleteUserDevice, emulationFor, labOptionsFor, describeDevice, normalizeDevice } from "./devices.mjs";
 export { HOOK_PATH, serveStatic, proxyRequest, proxyUpgrade, detectEntry, looksLikeWasmExport, applyIsolation } from "./server.mjs";
 export { startMcpServer } from "./mcp.mjs";

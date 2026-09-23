@@ -12,7 +12,8 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { HOOK_JS } from "./hook.mjs";
-import { renderShell, VIEWPORTS } from "./shell.mjs";
+import { renderShell } from "./shell.mjs";
+import { VIEWPORTS, allDevices, resolveDevice, upsertUserDevice, deleteUserDevice, emulationFor, labOptionsFor, GROUP_LABELS, USER_DEVICES_PATH } from "./devices.mjs";
 import { HOOK_PATH, serveStatic, proxyRequest, proxyUpgrade, detectEntry, looksLikeWasmExport, applyIsolation } from "./server.mjs";
 import { Lab } from "./lab.mjs";
 
@@ -53,7 +54,7 @@ function readBody(req) {
  * neither url nor dir is given.
  */
 export async function resolveConfig(input = {}, { cwd } = {}) {
-    const cfg = { isolationMode: input.isolation ?? "auto", viewport: input.viewport ?? "fill", title: input.title, autoReload: input.watch !== false };
+    const cfg = { isolationMode: input.isolation ?? "auto", viewport: input.viewport ?? "fill", device: input.device ?? null, title: input.title, autoReload: input.watch !== false };
 
     if (input.url) {
         let target;
@@ -116,7 +117,8 @@ export class Preview {
         this.clients = new Set();
         this.pending = new Map();
         this.lab = null;
-        this.ui = { viewport: cfg.viewport.toLowerCase(), rotated: false, autoReload: cfg.autoReload, isolation: false };
+        this.ui = { viewport: cfg.viewport.toLowerCase(), rotated: false, autoReload: cfg.autoReload, isolation: false, device: null, emulation: null };
+        this._initialDevice = cfg.device ?? null;
         this._isolationMode = cfg.isolationMode;
         this._filesDir = filesDir ?? path.join(os.tmpdir(), "gamelab");
         this.log = log ?? (() => {});
@@ -139,6 +141,7 @@ export class Preview {
 
     async start() {
         this.ui.isolation = this._isolationMode === "on" ? true : this._isolationMode === "off" ? false : this.mode === "dir" && (await looksLikeWasmExport(this.dir));
+        if (this._initialDevice) await this.setDevice(this._initialDevice);
         const server = createServer(async (req, res) => {
             const url = new URL(req.url, "http://127.0.0.1");
             try {
@@ -175,7 +178,7 @@ export class Preview {
     info() {
         return {
             id: this.id, title: this.title, mode: this.mode, source: this.source, entry: this.entry,
-            url: this.shellUrl, gameUrl: this.gameUrl, isolation: this.ui.isolation,
+            url: this.shellUrl, gameUrl: this.gameUrl, isolation: this.ui.isolation, device: this.ui.device, ui: this.ui,
             panelConnected: this.clients.size > 0, labRunning: !!this.lab?.running, filesDir: this._filesDir,
         };
     }
@@ -193,6 +196,19 @@ export class Preview {
         Object.assign(this.ui, patch);
         this.broadcast("state", patch);
         return this.ui;
+    }
+
+    /**
+     * Select a device profile (id or name) for the panel: sets the viewport to
+     * its resolution and the emulation the hook applies on the next reload.
+     * `null` clears the profile and returns to "fill".
+     */
+    async setDevice(idOrName, extra = {}) {
+        if (idOrName === null) return this.setUi({ ...extra, device: null, emulation: null, viewport: extra.viewport ?? "fill" });
+        const d = await resolveDevice(idOrName);
+        if (!d) throw new GameLabError("bad_device", `Unknown device profile "${idOrName}". Use list_devices to see the seeded and user profiles.`);
+        const rotated = extra.rotated ?? this.ui.rotated;
+        return this.setUi({ ...extra, device: d.id, viewport: `${d.width}x${d.height}`, emulation: emulationFor(d, { rotated }) });
     }
 
     /** Send a command to the shell (or the game via the shell) and await its result. */
@@ -220,7 +236,7 @@ export class Preview {
         }
         if (url.pathname === HOOK_PATH) {
             res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" });
-            return res.end(HOOK_JS);
+            return res.end(`window.__gpEmu = ${JSON.stringify(this.ui.emulation)};\n` + HOOK_JS);
         }
         if (route === "events") {
             res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive" });
@@ -237,7 +253,29 @@ export class Preview {
             if (typeof patch.rotated === "boolean") allowed.rotated = patch.rotated;
             if (typeof patch.autoReload === "boolean") allowed.autoReload = patch.autoReload;
             if (typeof patch.isolation === "boolean") allowed.isolation = patch.isolation;
+            if (patch.device === null || typeof patch.device === "string") {
+                try { return json(res, 200, await this.setDevice(patch.device, allowed)); } catch (err) { return json(res, 400, { error: err.message }); }
+            }
+            if (allowed.viewport !== undefined && this.ui.device) { allowed.device = null; allowed.emulation = null; }
+            if (allowed.rotated !== undefined && this.ui.device) { const d = await resolveDevice(this.ui.device); if (d) allowed.emulation = emulationFor(d, { rotated: allowed.rotated }); }
             return json(res, 200, this.setUi(allowed));
+        }
+        if (route === "api/devices") {
+            if (req.method === "GET") return json(res, 200, { devices: await allDevices(), groups: GROUP_LABELS, userFile: USER_DEVICES_PATH().replace(process.env.HOME || "\0", "~") });
+            try {
+                if (req.method === "POST") { const d = await upsertUserDevice(await readBody(req)); if (this.ui.device === d.id) await this.setDevice(d.id); return json(res, 200, { saved: d, devices: await allDevices() }); }
+                if (req.method === "DELETE") { const id = url.searchParams.get("id"); const removed = await deleteUserDevice(id); if (this.ui.device === id) await this.setDevice((await resolveDevice(id)) ? id : null); return json(res, 200, { removed, devices: await allDevices() }); }
+            } catch (err) { return json(res, 400, { error: err.message }); }
+        }
+        if (route === "api/lab/open" && req.method === "POST") {
+            const body = await readBody(req);
+            try {
+                const d = body.device ? await resolveDevice(body.device) : null;
+                if (body.device && !d) return json(res, 400, { error: `Unknown device "${body.device}"` });
+                const lab = await this.labFor();
+                const r = await lab.open({ ...labOptionsFor(d, { landscape: !!body.landscape }), headless: false });
+                return json(res, 200, r);
+            } catch (err) { return json(res, 500, { error: err.message }); }
         }
         if (route === "api/result" && req.method === "POST") {
             const body = await readBody(req);

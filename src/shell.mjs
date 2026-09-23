@@ -79,7 +79,11 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   /* drawer */
   #drawer { flex:none; height:220px; display:flex; flex-direction:column; border-top:1px solid var(--bd); background:#0c0e12; }
   #drawer.hidden { display:none; }
-  #grip { height:5px; cursor:row-resize; background:var(--bar); transition:background var(--ease); } #grip:hover { background:var(--bd2); }
+  #grip { position:relative; height:6px; flex:none; cursor:row-resize; background:var(--bar); touch-action:none; }
+  #grip::before { content:""; position:absolute; inset:-5px 0; }
+  #grip::after { content:""; position:absolute; left:50%; top:2px; width:36px; height:2px; margin-left:-18px; border-radius:1px; background:var(--bd2); transition:background var(--ease), width var(--ease); }
+  #grip:hover::after, body.dragging #grip::after { background:var(--acc); width:56px; }
+  body.dragging { cursor:row-resize; user-select:none; } body.dragging #game, body.dragging #stage { pointer-events:none; }
   #dbar { display:flex; gap:6px; align-items:center; padding:5px 8px; border-bottom:1px solid var(--bd); }
   #dbar .f, #dbar .tab { height:22px; padding:0 8px; color:var(--mute); background:transparent; border-color:transparent; } #dbar .f:hover, #dbar .tab:hover { color:var(--fg); background:var(--ctl2); }
   #dbar .f.on { color:var(--fg); background:var(--ctl2); border-color:var(--bd2); } #dbar .tab { font-weight:600; } #dbar .tab.on { color:var(--fg); background:#1d2a3d; border-color:#2f4b70; }
@@ -478,10 +482,23 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   $("toggle").onclick = function () { setDrawer($("drawer").classList.contains("hidden")); };
   $("collapse").onclick = function () { setDrawer(false); };
   (function grip() {
-    var g = $("grip"), startY, startH;
-    g.onmousedown = function (e) { startY = e.clientY; startH = $("drawer").offsetHeight; document.body.style.userSelect = "none"; window.onmousemove = move; window.onmouseup = up; };
-    function move(e) { $("drawer").style.height = Math.max(80, Math.min(window.innerHeight - 120, startH + (startY - e.clientY))) + "px"; applyViewport(); }
-    function up() { window.onmousemove = window.onmouseup = null; document.body.style.userSelect = ""; }
+    // Pointer capture keeps the drag alive when the cursor crosses the game iframe (which would otherwise swallow the move/up events).
+    var g = $("grip"), d = $("drawer"), startY, startH, raf = 0;
+    var saved = Number(localStorage.getItem("gp.drawerH")); if (saved >= 80) d.style.height = saved + "px";
+    g.addEventListener("pointerdown", function (e) {
+      if (e.button !== 0) return;
+      e.preventDefault(); g.setPointerCapture(e.pointerId);
+      startY = e.clientY; startH = d.offsetHeight; document.body.classList.add("dragging");
+    });
+    g.addEventListener("pointermove", function (e) {
+      if (!g.hasPointerCapture(e.pointerId)) return;
+      var h = Math.max(80, Math.min(window.innerHeight - 120, startH + (startY - e.clientY)));
+      if (!raf) raf = requestAnimationFrame(function () { raf = 0; d.style.height = h + "px"; applyViewport(); });
+    });
+    function up(e) { if (!g.hasPointerCapture(e.pointerId)) return; g.releasePointerCapture(e.pointerId); document.body.classList.remove("dragging"); localStorage.setItem("gp.drawerH", String(d.offsetHeight)); }
+    g.addEventListener("pointerup", up); g.addEventListener("pointercancel", up);
+    g.addEventListener("dblclick", function () { d.style.height = "220px"; localStorage.removeItem("gp.drawerH"); applyViewport(); });
+    g.title = "Drag to resize \u00b7 double-click to reset";
   })();
 
 

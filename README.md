@@ -176,4 +176,4 @@ Profiles are editable: **New** / duplicate / edit / delete in the menu, or `save
 
 ## License
 
-MIT
+MIT © Muqecha Studios — see [LICENSE](LICENSE).

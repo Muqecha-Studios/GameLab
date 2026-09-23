@@ -146,7 +146,9 @@ export function renderShell({ title, source, gameSrc, isolation, mode }) {
   #glanes.fl { -webkit-mask:linear-gradient(90deg,transparent,#000 22px); mask:linear-gradient(90deg,transparent,#000 22px); }
   #glanes.fl.fr { -webkit-mask:linear-gradient(90deg,transparent,#000 22px,#000 calc(100% - 22px),transparent); mask:linear-gradient(90deg,transparent,#000 22px,#000 calc(100% - 22px),transparent); }
   #dbar .gnav { width:20px; margin:0 -2px; } #dbar [hidden] { display:none !important; } #glanes .tog { height:22px; padding:0 8px 0 6px; color:var(--mute); white-space:nowrap; flex:none; } #glanes .tog[aria-pressed=true] { color:var(--fg); }
-  #gc { display:block; width:100%; cursor:crosshair; touch-action:none; }
+  #gc { display:block; width:100%; cursor:crosshair; touch-action:pan-y; } #gc.panning { cursor:grabbing; } #gc:focus-visible { outline-offset:-2px; }
+  #gov { position:sticky; bottom:0; display:block; width:100%; height:26px; background:#0c0e12; border-top:1px solid var(--bd); cursor:pointer; touch-action:none; } #gov.dragging { cursor:grabbing; }
+  #gpause svg { width:12px; height:12px; } #gpause[aria-pressed=true] { color:var(--warn); background:#2a230f; border-color:#4a3b14; }
   #gempty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; line-height:1.6; pointer-events:none; }
   .sec { display:grid; grid-template-columns:64px 1fr; gap:2px 10px; padding:4px 0; border-bottom:1px solid #12151b; }
   .sec > b { color:var(--mute); font-weight:600; }
@@ -236,6 +238,7 @@ export function renderShell({ title, source, gameSrc, isolation, mode }) {
       <button id="clear" class="con">Clear</button>
       <button id="glprev" class="gr icon gnav" hidden title="Scroll series left"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 4L6 8l4 4"/></svg></button><span id="glanes" class="gr" role="group" aria-label="Series"></span><button id="glnext" class="gr icon gnav" hidden title="Scroll series right"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 4l4 4-4 4"/></svg></button>
       <span id="perfhint" class="grow"></span>
+      <button id="gpause" class="gr tog" aria-pressed="false" title="Pause the view to inspect it; samples keep recording (Space). Drag or shift-scroll to move, ⌘/Ctrl-scroll to zoom."><svg viewBox="0 0 16 16" fill="currentColor"><rect x="4" y="3" width="3" height="10" rx=".8"/><rect x="9" y="3" width="3" height="10" rx=".8"/></svg><span>Pause</span></button>
       <select id="gwin" class="gr" title="Time window"><option value="30000">30 s</option><option value="60000" selected>1 min</option><option value="300000">5 min</option><option value="0">All</option></select>
       <button id="gcsv" class="gr" title="Download every sample as CSV">CSV</button>
       <button id="resetm" title="Reset hitch log and frame-time samples">Reset</button>
@@ -245,7 +248,7 @@ export function renderShell({ title, source, gameSrc, isolation, mode }) {
     </div>
     <div id="log"><div id="empty">No console output yet.<br><span class="muted">console.*, errors, unhandled rejections and game events from the page appear here.</span></div></div>
     <div id="perf"><div id="perfbody" class="muted" style="padding:12px 0">Waiting for the game hook…</div></div>
-    <div id="graph"><canvas id="gc" aria-label="Metrics over time"></canvas><div id="gempty" class="muted">Collecting samples…<br><span>FPS, frame time, draw calls, heap and engine timings are recorded every 0.5 s while the game runs.</span></div></div>
+    <div id="graph"><canvas id="gc" tabindex="0" aria-label="Metrics over time. Space pauses; arrow keys move through time; + and - zoom; End returns to live."></canvas><canvas id="gov" aria-label="Whole session overview; drag the window to move through time"></canvas><div id="gempty" class="muted">Collecting samples…<br><span>FPS, frame time, draw calls, heap and engine timings are recorded every 0.5 s while the game runs.</span></div></div>
   </div>
 </div>
 <script>
@@ -872,7 +875,7 @@ export function renderShell({ title, source, gameSrc, isolation, mode }) {
     { key: "res.domNodes", label: "DOM nodes", color: "#9fb7c9", zero: false, dec: 0, opt: true, def: false },
   ];
   var TONE = { "": "#d7dae0", warn: "#f2b84b", bad: "#ff6b6b" };
-  var G = { win: 60000, hover: null, vis: {}, raf: 0, ro: null }; // vis: explicit per-lane visibility; lanes with def:false start hidden
+  var G = { win: 60000, hover: null, vis: {}, raf: 0, ro: null, end: null, view: null, drag: null }; // end: null = live, else the paused view's right edge (ms) // vis: explicit per-lane visibility; lanes with def:false start hidden
   try {
     var visSaved = JSON.parse(localStorage.getItem("gp.graphVis") || "null");
     if (visSaved && typeof visSaved === "object") G.vis = visSaved;
@@ -933,7 +936,7 @@ export function renderShell({ title, source, gameSrc, isolation, mode }) {
     try { localStorage.setItem("gp.graphVis", JSON.stringify(G.vis)); } catch (err) {}
     renderLaneChips(); scheduleGraph();
   });
-  $("gwin").onchange = function () { G.win = Number($("gwin").value); scheduleGraph(); };
+  $("gwin").onchange = function () { G.win = Number($("gwin").value); if (G.end != null) G.end = clampEnd(G.end); syncWinSelect(); scheduleGraph(); };
   $("gcsv").onclick = function () {
     var cols = ["time", "fps", "worstMs", "cpuMs", "gpuMs", "inputMs", "drawCalls", "progSwitches", "texBinds", "fboBinds", "stateChanges", "heapMB", "texMemMB", "bufMemMB", "wasmMB", "domNodes", "processMs", "physicsMs", "renderMs", "scriptMs", "entities"];
     var lines = [cols.join(",")], nz = function (v) { return v == null ? "" : v; };
@@ -956,20 +959,24 @@ export function renderShell({ title, source, gameSrc, isolation, mode }) {
   function scheduleGraph() { if (G.raf) return; G.raf = requestAnimationFrame(function () { G.raf = 0; drawGraph(); }); }
   function drawGraph() {
     var box = $("graph"), c = $("gc"); if (box.clientWidth === 0) return;
-    var lanes = activeLanes(), LANE_MIN = 44, AXIS = 18, GUT = 46, MK = 14;
-    var W = box.clientWidth, H = Math.max(box.clientHeight, lanes.length * LANE_MIN + AXIS + MK), dpr = window.devicePixelRatio || 1;
+    var lanes = activeLanes(), LANE_MIN = 44, AXIS = 18, GUT = 46, MK = 14, OVH = $("gov").offsetHeight || 26;
+    var W = box.clientWidth, H = Math.max(box.clientHeight - OVH, lanes.length * LANE_MIN + AXIS + MK), dpr = window.devicePixelRatio || 1;
     if (c.width !== Math.round(W * dpr) || c.height !== Math.round(H * dpr)) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); c.style.height = H + "px"; }
     var ctx = c.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
     $("gempty").style.display = hist.length < 3 ? "flex" : "none";
+    drawOverview();
     if (hist.length < 3 || !lanes.length) { if (hist.length >= 3) { ctx.fillStyle = "#8b93a3"; ctx.font = "11.5px " + MONO; ctx.textAlign = "center"; ctx.fillText("All series hidden", W / 2, H / 2); } return; }
-    var now = Date.now(), t1 = now, t0 = G.win ? now - G.win : Math.min(hist[0].t, now - 10000);
+    var now = Date.now(), live = G.end == null, span0 = viewSpan(now);
+    var t1 = live ? now : G.end, t0 = t1 - span0;
     var PW = W - GUT, laneH = (H - AXIS - MK) / lanes.length;
+    G.view = { t0: t0, t1: t1, pw: PW };
     var X = function (t) { return (t - t0) / (t1 - t0) * PW; };
-    var vis = [], i0 = 0; for (var i = 0; i < hist.length; i++) if (hist[i].t >= t0 - 1000) { i0 = i; break; }
-    vis = hist.slice(i0);
+    var vis = [], i0 = 0, i1 = hist.length; for (var i = 0; i < hist.length; i++) if (hist[i].t >= t0 - 1000) { i0 = i; break; }
+    if (!live) for (var ie = i0; ie < hist.length; ie++) if (hist[ie].t > t1 + 1000) { i1 = ie; break; }
+    vis = hist.slice(i0, i1);
     // hover sample
     var hs = null;
-    if (G.hover != null) { var ht = t0 + (G.hover / PW) * (t1 - t0), best = 1e12; for (var j = 0; j < vis.length; j++) { var d = Math.abs(vis[j].t - ht); if (d < best) { best = d; hs = vis[j]; } } if (hs && Math.abs(X(hs.t) - G.hover) > 28) hs = null; }
+    if (G.hover != null && !G.drag) { var ht = t0 + (G.hover / PW) * (t1 - t0), best = 1e12; for (var j = 0; j < vis.length; j++) { var d = Math.abs(vis[j].t - ht); if (d < best) { best = d; hs = vis[j]; } } if (hs && Math.abs(X(hs.t) - G.hover) > 28) hs = null; }
     ctx.font = "10px " + MONO; ctx.textBaseline = "middle";
     lanes.forEach(function (l, li) {
       var top = MK + li * laneH, bot = top + laneH, labelYs = [];
@@ -1019,7 +1026,7 @@ export function renderShell({ title, source, gameSrc, isolation, mode }) {
       if (path) { ctx.lineTo(lastSegX, bot - 6); ctx.lineTo(startX, bot - 6); ctx.closePath(); }
       ctx.fill(); ctx.restore();
       // live dot
-      if (lastX != null && !hs) { ctx.fillStyle = l.color; ctx.beginPath(); ctx.arc(lastX, lastY, 2.5, 0, Math.PI * 2); ctx.fill(); }
+      if (lastX != null && !hs && live) { ctx.fillStyle = l.color; ctx.beginPath(); ctx.arc(lastX, lastY, 2.5, 0, Math.PI * 2); ctx.fill(); }
       // legend: label + value (hover or latest)
       var cur = hs ? laneVal(hs, l.key) : (vis.length ? laneVal(vis[vis.length - 1], l.key) : null);
       if (!hs && l.gaps && typeof cur !== "number") for (var k5 = vis.length - 1; k5 >= 0; k5--) { var v5 = laneVal(vis[k5], l.key); if (typeof v5 === "number") { cur = v5; break; } }
@@ -1042,24 +1049,140 @@ export function renderShell({ title, source, gameSrc, isolation, mode }) {
     // time axis
     var span = t1 - t0, stepMs = span <= 30000 ? 5000 : span <= 60000 ? 10000 : span <= 300000 ? 60000 : span <= 900000 ? 120000 : 300000;
     ctx.fillStyle = "#5b6371"; ctx.textBaseline = "middle"; ctx.textAlign = "center";
-    for (var back = stepMs; back < span; back += stepMs) {
-      var tx = X(t1 - back); if (tx < 20) break;
-      ctx.strokeStyle = "#1a1e27"; ctx.beginPath(); ctx.moveTo(Math.round(tx) + 0.5, gh); ctx.lineTo(Math.round(tx) + 0.5, gh + 4); ctx.stroke();
-      ctx.fillText("-" + (back >= 60000 ? (back / 60000) + " min" : (back / 1000) + " s"), tx, gh + 10);
+    if (live) {
+      for (var back = stepMs; back < span; back += stepMs) {
+        var tx = X(t1 - back); if (tx < 20) break;
+        ctx.strokeStyle = "#1a1e27"; ctx.beginPath(); ctx.moveTo(Math.round(tx) + 0.5, gh); ctx.lineTo(Math.round(tx) + 0.5, gh + 4); ctx.stroke();
+        ctx.fillText("-" + (back >= 60000 ? (back / 60000) + " min" : (back / 1000) + " s"), tx, gh + 10);
+      }
+      ctx.textAlign = "right"; ctx.fillStyle = hs ? "#5b6371" : "#8b93a3"; ctx.fillText("now", PW - 2, gh + 10);
+    } else {
+      // paused: wall-clock ticks, so labels don't drift while you inspect
+      var endLab = clock(t1), endW = ctx.measureText(endLab).width + 10;
+      for (var tt = Math.ceil(t0 / stepMs) * stepMs; tt < t1; tt += stepMs) {
+        var tx2 = X(tt); if (tx2 < 24 || tx2 > PW - endW - 24) continue;
+        ctx.strokeStyle = "#1a1e27"; ctx.beginPath(); ctx.moveTo(Math.round(tx2) + 0.5, gh); ctx.lineTo(Math.round(tx2) + 0.5, gh + 4); ctx.stroke();
+        ctx.fillText(clock(tt), tx2, gh + 10);
+      }
+      ctx.textAlign = "right"; ctx.fillStyle = hs ? "#5b6371" : "#f2b84b"; ctx.fillText(endLab, PW - 2, gh + 10);
     }
-    ctx.textAlign = "right"; ctx.fillStyle = hs ? "#5b6371" : "#8b93a3"; ctx.fillText("now", PW - 2, gh + 10);
     // crosshair
     if (hs) {
       var hx = Math.round(X(hs.t)) + 0.5;
       ctx.strokeStyle = "#8b93a3"; ctx.globalAlpha = 0.6; ctx.beginPath(); ctx.moveTo(hx, MK); ctx.lineTo(hx, gh); ctx.stroke(); ctx.globalAlpha = 1;
-      var ago = (now - hs.t) / 1000, lab = "-" + (ago >= 60 ? Math.floor(ago / 60) + "m " + Math.round(ago % 60) + "s" : ago.toFixed(1) + " s");
+      var ago = (now - hs.t) / 1000, lab = live ? "-" + (ago >= 60 ? Math.floor(ago / 60) + "m " + Math.round(ago % 60) + "s" : ago.toFixed(1) + " s") : clock(hs.t, true);
       ctx.font = "600 10px " + MONO; var tw2 = ctx.measureText(lab).width; ctx.textAlign = "center";
       ctx.fillStyle = "#171a21"; ctx.fillRect(Math.min(Math.max(hx - tw2 / 2 - 4, 0), PW - tw2 - 8), gh + 2, tw2 + 8, 14);
       ctx.fillStyle = "#d7dae0"; ctx.fillText(lab, Math.min(Math.max(hx, tw2 / 2 + 4), PW - tw2 / 2 - 4), gh + 10);
     }
   }
   var MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
-  $("gc").addEventListener("pointermove", function (e) { var r = $("gc").getBoundingClientRect(); G.hover = e.clientX - r.left; scheduleGraph(); });
+  // ---- timeline: pause, pan, zoom, overview ----
+  function clock(t, tenths) { var d = new Date(t), p = function (n) { return (n < 10 ? "0" : "") + n; }; return p(d.getHours()) + ":" + p(d.getMinutes()) + ":" + p(d.getSeconds()) + (tenths ? "." + Math.floor(d.getMilliseconds() / 100) : ""); }
+  function histStart(now) { return hist.length ? hist[0].t : now; }
+  function viewSpan(now) { return G.win || Math.max(now - Math.min(histStart(now), now - 10000), 10000); }
+  function clampEnd(e) { var now = Date.now(), span = viewSpan(now); return Math.min(now, Math.max(histStart(now) + span, e)); }
+  function setPaused(p, at) {
+    if (p) G.end = clampEnd(at != null ? at : (G.end != null ? G.end : Date.now())); else G.end = null;
+    var b = $("gpause"), on = G.end != null;
+    b.setAttribute("aria-pressed", String(on));
+    b.querySelector("span").textContent = on ? "Live" : "Pause";
+    b.querySelector("svg").innerHTML = on ? '<path d="M4.5 3.2v9.6a.6.6 0 0 0 .9.5l7.6-4.8a.6.6 0 0 0 0-1L5.4 2.7a.6.6 0 0 0-.9.5z"/>' : '<rect x="4" y="3" width="3" height="10" rx=".8"/><rect x="9" y="3" width="3" height="10" rx=".8"/>';
+    b.title = on ? "Back to live (End)" : "Pause the view to inspect it; samples keep recording (Space). Drag or shift-scroll to move, \\u2318/Ctrl-scroll to zoom.";
+    scheduleGraph();
+  }
+  function panBy(ms) { var base = G.end != null ? G.end : Date.now(); setPaused(true, base + ms); }
+  function zoomTo(win, anchorFrac) {
+    var now = Date.now(), full = Math.max(now - histStart(now), 10000);
+    win = Math.max(5000, Math.min(win, Math.max(full, 30000)));
+    if (G.end == null) { G.win = win; }
+    else { var v = G.view || { t0: G.end - viewSpan(now), t1: G.end }, f = anchorFrac == null ? 0.5 : anchorFrac, tc = v.t0 + f * (v.t1 - v.t0); G.win = win; G.end = clampEnd(tc + (1 - f) * win); }
+    syncWinSelect(); scheduleGraph();
+  }
+  function syncWinSelect() {
+    var sel = $("gwin"), val = String(G.win), has = false, cust = sel.querySelector("option[data-custom]");
+    for (var i = 0; i < sel.options.length; i++) if (!sel.options[i].dataset.custom && sel.options[i].value === val) has = true;
+    if (has) { if (cust) cust.remove(); sel.value = val; return; }
+    if (!cust) { cust = document.createElement("option"); cust.dataset.custom = "1"; sel.insertBefore(cust, sel.firstChild); }
+    cust.value = val; cust.textContent = G.win >= 60000 ? (Math.round(G.win / 6000) / 10) + " min" : Math.round(G.win / 1000) + " s"; sel.value = val;
+  }
+  $("gpause").onclick = function () { setPaused(G.end == null); };
+  var gc = $("gc");
+  gc.addEventListener("wheel", function (e) {
+    var v = G.view; if (!v || hist.length < 3) return;
+    if (e.ctrlKey || e.metaKey) { e.preventDefault(); var r = gc.getBoundingClientRect(); zoomTo(viewSpan(Date.now()) * Math.exp(e.deltaY * 0.004), Math.max(0, Math.min(1, (e.clientX - r.left) / v.pw))); return; }
+    var dx = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.shiftKey ? e.deltaY : 0;
+    if (!dx) return; // plain vertical wheel scrolls the lanes
+    e.preventDefault(); panBy(dx / v.pw * (v.t1 - v.t0));
+  }, { passive: false });
+  gc.addEventListener("pointerdown", function (e) {
+    if (e.button !== 0 || !G.view || hist.length < 3) return;
+    G.drag = { x: e.clientX, end: G.view.t1, span: G.view.t1 - G.view.t0, pw: G.view.pw, moved: false };
+    gc.setPointerCapture(e.pointerId);
+  });
+  gc.addEventListener("pointermove", function (e) {
+    var d = G.drag; if (!d) return;
+    var dx = e.clientX - d.x; if (!d.moved && Math.abs(dx) < 4) return;
+    d.moved = true; gc.classList.add("panning"); setPaused(true, d.end - dx / d.pw * d.span);
+  });
+  function endDrag() { if (!G.drag) return; G.drag = null; gc.classList.remove("panning"); scheduleGraph(); }
+  gc.addEventListener("pointerup", endDrag); gc.addEventListener("pointercancel", endDrag);
+  gc.addEventListener("keydown", function (e) {
+    var v = G.view, span = v ? v.t1 - v.t0 : G.win || 60000, k = e.key;
+    if (k === " " || k === "p" || k === "P") setPaused(G.end == null);
+    else if (k === "ArrowLeft") panBy(-span * (e.shiftKey ? 0.5 : 0.1));
+    else if (k === "ArrowRight") panBy(span * (e.shiftKey ? 0.5 : 0.1));
+    else if (k === "Home") setPaused(true, 0);
+    else if (k === "End" || k === "Escape") setPaused(false);
+    else if (k === "+" || k === "=") zoomTo(span / 1.5);
+    else if (k === "-" || k === "_") zoomTo(span * 1.5);
+    else return;
+    e.preventDefault(); e.stopPropagation();
+  });
+  // Overview: the whole session (FPS), the visible window, and marks. Drag the window to move.
+  function drawOverview() {
+    var c = $("gov"), W = c.clientWidth, H = c.clientHeight, dpr = window.devicePixelRatio || 1; if (!W) return;
+    if (c.width !== Math.round(W * dpr) || c.height !== Math.round(H * dpr)) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); }
+    var ctx = c.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
+    if (hist.length < 3) return;
+    var now = Date.now(), a = histStart(now), b = now, PW = W - 46, X = function (t) { return (t - a) / Math.max(b - a, 1) * PW; };
+    var span = viewSpan(now), t1 = G.end != null ? G.end : now, t0 = t1 - span;
+    G.ov = { a: a, b: b, pw: PW };
+    ctx.strokeStyle = "#3fcf8e"; ctx.globalAlpha = 0.55; ctx.lineWidth = 1; ctx.beginPath();
+    var step = Math.max(1, Math.floor(hist.length / PW));
+    for (var i = 0; i < hist.length; i += step) { var s = hist[i], y = 4 + (1 - Math.max(0, Math.min(1, (s.fps || 0) / 60))) * (H - 8), x = X(s.t); if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); }
+    ctx.stroke(); ctx.globalAlpha = 1;
+    marks.forEach(function (m) { if (m.t < a) return; ctx.fillStyle = m.kind === "error" ? "#ff6b6b" : m.kind === "sys" ? "#4fa3ff" : "#3fcf8e"; ctx.fillRect(Math.round(X(m.t)), H - 3, 1, 3); });
+    var x0 = Math.max(0, X(t0)), x1 = Math.min(PW, X(t1)); if (x1 - x0 < 6) { var mid = (x0 + x1) / 2; x0 = mid - 3; x1 = mid + 3; }
+    ctx.fillStyle = "rgba(12,14,18,.62)"; ctx.fillRect(0, 0, x0, H); ctx.fillRect(x1, 0, PW - x1, H);
+    ctx.strokeStyle = G.end != null ? "#f2b84b" : "#4fa3ff"; ctx.lineWidth = 1; ctx.strokeRect(Math.round(x0) + 0.5, 1.5, Math.max(Math.round(x1 - x0) - 1, 1), H - 3);
+    ctx.font = "10px " + MONO; ctx.textBaseline = "middle";
+    if (G.end != null) {
+      // paused: the inspected range, always visible even when the lanes scroll
+      var rl = clock(t0) + " \u2013 " + clock(t1), rw = ctx.measureText(rl).width, cx = (x0 + x1) / 2;
+      var lx = rw + 12 < x1 - x0 ? cx - rw / 2 : x0 - rw - 8 > 0 ? x0 - rw - 8 : x1 + 8;
+      ctx.fillStyle = "rgba(12,14,18,.85)"; ctx.fillRect(lx - 4, H / 2 - 7, rw + 8, 14);
+      ctx.textAlign = "left"; ctx.fillStyle = "#f2b84b"; ctx.fillText(rl, lx, H / 2);
+    }
+    ctx.textAlign = "left"; ctx.fillStyle = "#5b6371";
+    var total = (now - a) / 1000; ctx.fillText(total >= 60 ? Math.floor(total / 60) + "m" + (Math.round(total % 60) + "").padStart(2, "0") + "s" : Math.round(total) + " s", PW + 6, H / 2);
+  }
+  var gov = $("gov");
+  function ovTime(e) { var r = gov.getBoundingClientRect(), o = G.ov; return o ? o.a + Math.max(0, Math.min(1, (e.clientX - r.left) / o.pw)) * (o.b - o.a) : null; }
+  gov.addEventListener("pointerdown", function (e) {
+    if (e.button !== 0 || !G.ov || hist.length < 3) return;
+    var t = ovTime(e), now = Date.now(), span = viewSpan(now), t1 = G.end != null ? G.end : now, t0 = t1 - span;
+    // grab inside the window keeps the offset; clicking outside centres the window there
+    var off = t >= t0 && t <= t1 ? t1 - t : span / 2;
+    G.ovDrag = { off: off }; gov.classList.add("dragging"); gov.setPointerCapture(e.pointerId);
+    setPaused(true, t + off);
+  });
+  gov.addEventListener("pointermove", function (e) { if (G.ovDrag) setPaused(true, ovTime(e) + G.ovDrag.off); });
+  function endOv() { G.ovDrag = null; gov.classList.remove("dragging"); }
+  gov.addEventListener("pointerup", endOv); gov.addEventListener("pointercancel", endOv);
+  gov.addEventListener("dblclick", function () { setPaused(false); });
+
+  $("gc").addEventListener("pointermove", function (e) { var r = $("gc").getBoundingClientRect(); G.hover = e.clientX - r.left; if (!G.drag) scheduleGraph(); });
   $("gc").addEventListener("pointerleave", function () { G.hover = null; scheduleGraph(); });
   if (window.ResizeObserver) { G.ro = new ResizeObserver(function () { if (perf.tab === "graph") scheduleGraph(); }); G.ro.observe($("graph")); }
   else window.addEventListener("resize", function () { if (perf.tab === "graph") scheduleGraph(); });

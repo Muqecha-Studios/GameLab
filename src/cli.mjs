@@ -6,15 +6,20 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { openPreview, GameLabError } from "./preview.mjs";
 import { TOOLS, callTool } from "./tools.mjs";
+import { addRecent } from "./launcher.mjs";
 
 const { version } = createRequire(import.meta.url)("../package.json");
 
 const HELP = `gamelab v${version} — test lab for HTML5/WebGL games (Godot, Unity, Phaser, PixiJS, Three.js …)
 
 Usage:
+  gamelab
+      No arguments: opens the shell in your browser with a launcher — pick a build folder
+      (or paste a dev-server / deployed-game URL) there. Same as \`gamelab serve --open\` with no source.
   gamelab serve  [dir|url] [--isolation auto|on|off] [--port N] [--out DIR] [--no-watch] [--open] [--profile ID]
       Serve a build, or reverse-proxy a dev server / a deployed https game, with the hook injected;
       prints the shell URL. Every command below accepts a deployed URL in place of a dir.
+      With no source (and no build found in the current folder) the shell starts on the launcher.
       The shell (any browser tab) shows FPS, console, and a Perf tab: frame times, hitches,
       WebGL counters, load timeline, findings, and a CPU profile of hot functions. --open launches it.
   gamelab run    <scenario.json> [dir|url] [--profile budget-android] [--device "iPhone 14"] [--landscape]
@@ -78,15 +83,20 @@ export async function main(argv = process.argv.slice(2)) {
     const { values: o, positionals } = parseArgs({ args: argv, options: OPTIONS, allowPositionals: true, allowNegative: true });
     const [cmd, ...rest] = positionals;
     if (o.version) return console.log(version);
-    if (o.help || !cmd) return console.log(HELP);
+    if (o.help || (!cmd && !process.stdout.isTTY)) return console.log(HELP);
 
     const common = { cwd: process.cwd(), filesDir: outDir(o.out), log: stderr, defaultTarget: "auto" };
 
-    switch (cmd) {
+    switch (cmd ?? "launch") {
+        case "launch":
         case "serve": {
-            const p = await openPreview({ ...sourceInput(rest[0]), isolation: o.isolation, watch: o.watch, device: o.profile }, { ...common, port: o.port ? Number(o.port) : 0 });
-            console.log(`Shell:  ${p.shellUrl}\nGame:   ${p.gameUrl}\nSource: ${p.source}${p.ui.isolation ? "  (COOP/COEP on)" : ""}${p.ui.emulation ? `\nDevice: ${p.ui.emulation.name} (${p.ui.viewport})` : ""}\nCtrl-C to stop.`);
-            if (o.open) openInBrowser(p.shellUrl);
+            const p = await openPreview({ ...sourceInput(rest[0]), isolation: o.isolation, watch: o.watch, device: o.profile }, { ...common, port: o.port ? Number(o.port) : 0, allowEmpty: true });
+            if (p.mode === "none") console.log(`Shell:  ${p.shellUrl}\nNo game yet — choose a build folder or paste a URL in the shell.\nCtrl-C to stop.`);
+            else {
+                await addRecent(p.mode, p.mode === "dir" ? p.dir : p.target.href);
+                console.log(`Shell:  ${p.shellUrl}\nGame:   ${p.gameUrl}\nSource: ${p.source}${p.ui.isolation ? "  (COOP/COEP on)" : ""}${p.ui.emulation ? `\nDevice: ${p.ui.emulation.name} (${p.ui.viewport})` : ""}\nCtrl-C to stop.`);
+            }
+            if (o.open || !cmd) openInBrowser(p.shellUrl);
             return keepAlive(p);
         }
 

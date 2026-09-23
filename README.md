@@ -65,6 +65,7 @@ Artifacts (screenshots, `.report.json`, `.trace.json`, `.webm`, `.har`) go to `-
 ## Use it from the terminal / CI
 
 ```sh
+gamelab                                         # opens the shell with a launcher: pick a build folder or paste a URL there
 gamelab serve builds/web --open                # serves + opens the shell (stats, console, Perf tab) in your browser
 gamelab serve http://localhost:5173/           # proxy a dev server (Vite/Phaser/etc.)
 gamelab serve https://example.com/play/ --open # profile an already deployed game (any command takes a URL in place of a dir)

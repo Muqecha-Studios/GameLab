@@ -16,6 +16,7 @@ import { renderShell } from "./shell.mjs";
 import { VIEWPORTS, allDevices, resolveDevice, upsertUserDevice, deleteUserDevice, emulationFor, labOptionsFor, GROUP_LABELS, USER_DEVICES_PATH } from "./devices.mjs";
 import { HOOK_PATH, serveStatic, proxyRequest, proxyUpgrade, detectEntry, looksLikeWasmExport, applyIsolation, isLoopback } from "./server.mjs";
 import { Lab } from "./lab.mjs";
+import { readRecents, addRecent, removeRecent, listDir, pickFolder, PICKER_AVAILABLE } from "./launcher.mjs";
 
 export const SHELL_PREFIX = "/__gp/";
 export const CMD_TIMEOUT_MS = 15000;
@@ -53,7 +54,7 @@ function readBody(req) {
  * into a normalized config. `cwd` is used to auto-detect a build folder when
  * neither url nor dir is given.
  */
-export async function resolveConfig(input = {}, { cwd } = {}) {
+export async function resolveConfig(input = {}, { cwd, allowEmpty = false } = {}) {
     const cfg = { isolationMode: input.isolation ?? "auto", viewport: input.viewport ?? "fill", device: input.device ?? null, title: input.title, autoReload: input.watch !== false };
 
     if (input.url) {
@@ -76,6 +77,7 @@ export async function resolveConfig(input = {}, { cwd } = {}) {
         for (const candidate of cwd ? [cwd, path.join(cwd, "dist"), path.join(cwd, "build"), path.join(cwd, "builds", "web"), path.join(cwd, "export", "web"), path.join(cwd, "public")] : []) {
             try { if (await detectEntry(candidate)) { dir = candidate; break; } } catch { /* skip */ }
         }
+        if (!dir && allowEmpty) return { ...cfg, mode: "none", key: "none", source: "", gameSrc: "about:blank", watchDir: null, title: cfg.title || "gamelab" };
         if (!dir) throw new GameLabError("no_source", "Pass either `url` (a running dev server, e.g. http://localhost:5173/) or `dir` (a folder containing a built web game with an .html entry).");
     }
     try {
@@ -113,7 +115,7 @@ export class Preview {
         this.target = cfg.target;
         this.watchDir = cfg.watchDir;
         this.watcher = null;
-        this.title = cfg.title || (cfg.mode === "dir" ? `Game · ${path.basename(cfg.dir)}` : `Game · ${cfg.target.host}`);
+        this.title = cfg.title || titleFor(cfg);
         this.source = cfg.source;
         this.gameSrc = cfg.gameSrc;
         this.clients = new Set();
@@ -133,8 +135,8 @@ export class Preview {
     /** Shell (panel UI) URL — open it in any browser to watch and play. */
     get shellUrl() { return `${this.url}${SHELL_PREFIX}`; }
     /** Direct game URL (hook injected, no shell chrome). What the lab loads. */
-    get gameUrl() { return `${this.url}${this.gameSrc}`; }
-    get status() { return this.mode === "dir" ? this.entry : this.target.host; }
+    get gameUrl() { return this.mode === "none" ? null : `${this.url}${this.gameSrc}`; }
+    get status() { return this.mode === "dir" ? this.entry : this.mode === "url" ? this.target.host : "no game loaded"; }
 
     async filesDir() {
         await mkdir(this._filesDir, { recursive: true });
@@ -148,6 +150,7 @@ export class Preview {
             const url = new URL(req.url, "http://127.0.0.1");
             try {
                 if (url.pathname.startsWith(SHELL_PREFIX)) return await this._handleShell(url, req, res);
+                if (this.mode === "none") { res.writeHead(302, { Location: SHELL_PREFIX, "Cache-Control": "no-store" }); return res.end(); }
                 if (this.mode === "dir") return await serveStatic(req, res, { dir: this.dir, isolation: this.ui.isolation });
                 return proxyRequest(req, res, { target: this.target, isolation: this.ui.isolation });
             } catch (err) {
@@ -164,8 +167,34 @@ export class Preview {
         this.server = server;
         this.url = `http://127.0.0.1:${typeof address === "object" && address ? address.port : 0}`;
         this._startWatcher();
-        this.log(`gamelab: ${this.mode === "dir" ? `serving ${this.dir} (${this.entry})` : `proxying ${this.target.origin}`} at ${this.url}${this.ui.isolation ? " · isolated" : ""}`);
+        this.log(`gamelab: ${this.describe()} at ${this.url}${this.ui.isolation ? " · isolated" : ""}`);
         return this;
+    }
+
+    describe() {
+        return this.mode === "dir" ? `serving ${this.dir} (${this.entry})` : this.mode === "url" ? `proxying ${this.target.origin}` : "launcher (no game yet — pick one in the shell)";
+    }
+
+    /**
+     * Switch what this preview serves ({dir} or {url}, same shape as open) without
+     * restarting the server. Connected shells reload themselves; a running lab
+     * navigates to the new game.
+     */
+    async setSource(input, { remember = true } = {}) {
+        const cfg = await resolveConfig({ isolation: this._isolationMode, ...input });
+        this.watcher?.close(); this.watcher = null;
+        Object.assign(this, { key: cfg.key, mode: cfg.mode, dir: cfg.dir, entry: cfg.entry, target: cfg.target, watchDir: cfg.watchDir, source: cfg.source, gameSrc: cfg.gameSrc, title: input.title || titleFor(cfg) });
+        this.ui.autoReload = cfg.autoReload;
+        this.ui.isolation = this._isolationMode === "on" ? true : this._isolationMode === "off" ? false : this.mode === "dir" && (await looksLikeWasmExport(this.dir));
+        this._startWatcher();
+        if (remember) await addRecent(this.mode, this.mode === "dir" ? this.dir : this.target.href);
+        if (this.lab) {
+            this.lab.gamePath = this.gameSrc;
+            if (this.lab.running) { try { await this.lab.page.goto(this.gameUrl, { waitUntil: "load", timeout: 60000 }); } catch (err) { this.log(`gamelab lab: could not load the new game: ${err.message}`, "warning"); } }
+        }
+        this.log(`gamelab: now ${this.describe()}`);
+        this.broadcast("source", { title: this.title, source: this.source, mode: this.mode });
+        return this.info();
     }
 
     async close() {
@@ -215,6 +244,7 @@ export class Preview {
 
     /** Send a command to the shell (or the game via the shell) and await its result. */
     command(target, cmd, timeoutMs = CMD_TIMEOUT_MS) {
+        if (this.mode === "none" && target === "game") throw new GameLabError("no_source", `No game is loaded yet. Pick a folder or URL in the shell (${this.shellUrl}) or call open with dir/url.`);
         if (this.clients.size === 0) {
             throw new GameLabError("not_connected", `No browser is attached to the panel. Open ${this.shellUrl} in a browser (or re-open the host panel), or use lab_open and target "lab".`);
         }
@@ -234,7 +264,7 @@ export class Preview {
         if (route === "" || route === "index.html") {
             const headers = applyIsolation({ "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" }, this.ui.isolation);
             res.writeHead(200, headers);
-            return res.end(renderShell({ title: this.title, source: this.source, gameSrc: this.gameSrc, isolation: this.ui.isolation }));
+            return res.end(renderShell({ title: this.title, source: this.source, gameSrc: this.gameSrc, isolation: this.ui.isolation, mode: this.mode }));
         }
         if (url.pathname === HOOK_PATH) {
             res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" });
@@ -291,7 +321,46 @@ export class Preview {
             return json(res, 200, { ok: true });
         }
         if (route === "api/info") return json(res, 200, this.info());
+        if (route.startsWith("api/launcher/") || route === "api/source") {
+            // These touch the filesystem / change what is served: only accept same-origin JSON
+            // requests from the shell itself (blocks CSRF from other sites and DNS rebinding).
+            if (!this._trusted(req)) return json(res, 403, { error: "forbidden" });
+            try { return await this._handleLauncher(route, url, req, res); }
+            catch (err) { return json(res, 400, { error: err.message }); }
+        }
         res.writeHead(404); res.end("not found");
+    }
+
+    _trusted(req) {
+        const port = new URL(this.url).port, okHosts = [`127.0.0.1:${port}`, `localhost:${port}`];
+        if (!okHosts.includes(String(req.headers.host))) return false;
+        const origin = req.headers.origin;
+        if (origin && !okHosts.some((h) => origin === `http://${h}`)) return false;
+        if (req.method !== "GET" && !String(req.headers["content-type"] || "").startsWith("application/json")) return false;
+        return true;
+    }
+
+    async _handleLauncher(route, url, req, res) {
+        if (route === "api/launcher/state") {
+            return json(res, 200, { mode: this.mode, source: this.source, recents: await readRecents(), cwd: this._cwd ?? process.cwd(), home: os.homedir(), picker: PICKER_AVAILABLE });
+        }
+        if (route === "api/launcher/fs") return json(res, 200, await listDir(expandHome(url.searchParams.get("path") || this._cwd || process.cwd())));
+        if (route === "api/launcher/pick" && req.method === "POST") {
+            const body = await readBody(req);
+            const start = body.start ? expandHome(String(body.start)) : undefined;
+            return json(res, 200, { path: await pickFolder(start) });
+        }
+        if (route === "api/launcher/recents" && req.method === "DELETE") {
+            const body = await readBody(req);
+            return json(res, 200, { recents: await removeRecent(body.kind, body.value) });
+        }
+        if (route === "api/source" && req.method === "POST") {
+            const body = await readBody(req);
+            const input = typeof body.url === "string" && body.url ? { url: body.url.trim() } : typeof body.dir === "string" && body.dir ? { dir: body.dir.trim() } : null;
+            if (!input) return json(res, 400, { error: "Enter a folder path or an http(s):// URL." });
+            return json(res, 200, await this.setSource(input));
+        }
+        return json(res, 404, { error: "not found" });
     }
 
     _startWatcher() {
@@ -324,6 +393,7 @@ export class Preview {
     }
 
     async labFor() {
+        if (this.mode === "none") throw new GameLabError("no_source", `No game is loaded yet. Pick a folder or URL in the shell (${this.shellUrl}) or call open with dir/url.`);
         this.lab ??= new Lab({ baseUrl: this.url, gamePath: this.gameSrc, filesDir: await this.filesDir(), log: this.log });
         return this.lab;
     }
@@ -412,7 +482,17 @@ export async function labCall(fn) {
 }
 
 /** Resolve input, create and start a Preview. */
+function titleFor(cfg) {
+    return cfg.mode === "dir" ? `Game · ${path.basename(cfg.dir)}` : cfg.mode === "url" ? `Game · ${cfg.target.host}` : "gamelab";
+}
+
+/**
+ * Serve a game. `opts.allowEmpty` starts in launcher mode when no source is
+ * given or detected, so the user can pick a folder / URL in the shell.
+ */
 export async function openPreview(input, opts = {}) {
-    const cfg = await resolveConfig(input, { cwd: opts.cwd });
-    return new Preview(cfg, opts).start();
+    const cfg = await resolveConfig(input, { cwd: opts.cwd, allowEmpty: opts.allowEmpty });
+    const p = new Preview(cfg, opts);
+    p._cwd = opts.cwd;
+    return p.start();
 }

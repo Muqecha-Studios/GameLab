@@ -6,7 +6,8 @@
 import { escapeHtml } from "./server.mjs";
 import { VIEWPORTS, GROUP_LABELS } from "./devices.mjs";
 
-export function renderShell({ title, source, gameSrc, isolation }) {
+export function renderShell({ title, source, gameSrc, isolation, mode }) {
+    const empty = mode === "none";
     return `<!doctype html>
 <html lang="en">
 <head>
@@ -76,6 +77,41 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   #devedit .act { display:flex; gap:6px; align-items:center; margin-top:2px; } #devedit .act .grow { flex:1; }
   #deverr { color:var(--err); font-size:11px; min-height:14px; }
   #devedit h4 { margin:0; font-size:12px; font-weight:600; } #devedit .hint { font-size:10.5px; color:var(--mute); }
+  /* launcher: open a folder or URL */
+  #openbtn { margin-left:2px; }
+  body.empty #bar .grp, body.empty #bar .sep, body.empty #drawer, body.empty #vplabel, body.empty #game { display:none !important; }
+  #launch { position:absolute; inset:0; z-index:15; display:flex; align-items:center; justify-content:center; padding:16px; background:rgba(10,11,14,.8); -webkit-backdrop-filter:blur(6px); backdrop-filter:blur(6px); opacity:0; transition:opacity var(--ease); }
+  #launch.open { opacity:1; } #launch[hidden] { display:none; }
+  body.empty #launch { background:transparent; -webkit-backdrop-filter:none; backdrop-filter:none; }
+  .lc { width:min(860px, 100%); max-height:100%; display:flex; flex-direction:column; background:#141821; border:1px solid var(--bd2); border-radius:12px; box-shadow:0 18px 60px rgba(0,0,0,.6); overflow:hidden; transform:translateY(6px) scale(.99); transition:transform var(--ease); }
+  #launch.open .lc { transform:none; }
+  .lhead { padding:18px 20px 14px; display:flex; flex-direction:column; gap:10px; }
+  .lhead .lt { display:flex; align-items:flex-start; gap:12px; } .lhead .lt > div { flex:1; min-width:0; }
+  .lhead h2 { margin:0; font-size:15px; font-weight:600; letter-spacing:-.005em; } .lhead p { margin:3px 0 0; color:var(--mute); font-size:12px; line-height:1.5; }
+  #lform { display:flex; gap:6px; } #lin { flex:1; min-width:0; height:34px; font:12.5px var(--mono); padding:0 10px; background:#0f1218; border-color:var(--bd2); } #lin:focus { border-color:#2f4b70; outline:none; box-shadow:0 0 0 3px rgba(79,163,255,.15); }
+  #lform button { height:34px; padding:0 12px; } #lform button.primary { padding:0 16px; }
+  #lmsg { font-size:11.5px; min-height:16px; color:var(--mute); display:flex; gap:6px; align-items:center; } #lmsg.err { color:var(--err); } #lmsg .k { font:10.5px var(--mono); padding:1px 5px; border-radius:3px; background:#1f232d; color:var(--fg); }
+  .lcols { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1.35fr); border-top:1px solid var(--bd); min-height:0; flex:1; }
+  .lcols > section { display:flex; flex-direction:column; min-height:0; } .lcols > section + section { border-left:1px solid var(--bd); }
+  .lcols h3 { margin:0; padding:10px 14px 6px; font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:var(--mute); display:flex; gap:8px; align-items:center; }
+  .llist { overflow:auto; padding:0 6px 8px; height:300px; }
+  .lrow { display:flex; align-items:center; gap:4px; border-radius:6px; transition:background var(--ease); } .lrow:hover, .lrow:focus-within { background:#1b2030; }
+  .lrow .lnav { flex:1; min-width:0; height:auto; min-height:30px; padding:5px 8px; background:transparent; border-color:transparent; text-align:left; justify-content:flex-start; gap:8px; }
+  .lrow .lnav:hover { background:transparent; border-color:transparent; }
+  .lrow .lnav svg { color:var(--mute); } .lrow.game .lnav svg { color:var(--ok); }
+  .lrow .ln { display:flex; flex-direction:column; min-width:0; } .lrow .ln b { font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; } .lrow .ln span { font:10.5px var(--mono); color:var(--mute); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; direction:rtl; text-align:left; }
+  .lrow .lmeta { flex:none; font:10.5px var(--mono); color:var(--mute); padding-right:4px; }
+  .lrow .lgo { flex:none; height:24px; padding:0 10px; margin-right:4px; } .lrow .lx { flex:none; width:24px; height:24px; margin-right:4px; opacity:0; } .lrow:hover .lx, .lrow .lx:focus-visible { opacity:1; }
+  .tag.game { color:var(--ok); border-color:#264a3a; } .tag.cur { color:var(--acc2); border-color:#2f4b70; }
+  #lcrumb { display:flex; flex-wrap:nowrap; justify-content:flex-end; align-items:center; overflow:hidden; min-width:0; text-transform:none; letter-spacing:0; font:500 11px var(--mono); }
+  #lcrumb button { height:20px; padding:0 4px; background:transparent; border-color:transparent; color:var(--mute); font:inherit; flex:none; } #lcrumb button:hover { color:var(--fg); background:var(--ctl2); } #lcrumb button:last-child { color:var(--fg); }
+  #lcrumb .cs { color:#4a5162; flex:none; }
+  #lhere { margin:0 6px 6px; padding:8px 10px; border:1px solid #264a3a; background:#0f1a15; border-radius:8px; display:flex; align-items:center; gap:8px; font-size:11.5px; } #lhere[hidden] { display:none; } #lhere .grow { flex:1; min-width:0; } #lhere b { color:var(--ok); font-weight:600; }
+  .lempty { padding:14px 10px; color:var(--mute); font-size:11.5px; line-height:1.55; }
+  .lfoot { padding:9px 16px; border-top:1px solid var(--bd); color:var(--mute); font-size:11px; display:flex; gap:12px; align-items:center; } .lfoot .grow { flex:1; min-width:0; } .lfoot code { font:10.5px var(--mono); color:var(--fg); background:#1f232d; padding:1px 5px; border-radius:3px; }
+  .lfoot kbd { font:10.5px var(--mono); color:var(--fg); border:1px solid var(--bd2); border-radius:3px; padding:0 4px; }
+  body.empty .lfoot .esc, body.empty #lclose { display:none; }
+  @media (max-width:720px) { .lcols { grid-template-columns:minmax(0,1fr); } .lcols > section + section { border-left:0; border-top:1px solid var(--bd); } .llist { height:180px; } .lfoot .tip { display:none; } }
   /* drawer */
   #drawer { flex:none; height:220px; display:flex; flex-direction:column; border-top:1px solid var(--bd); background:#0c0e12; }
   #drawer.hidden { display:none; }
@@ -130,10 +166,11 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   @media (prefers-reduced-motion: reduce) { *, ::before, ::after { transition:none !important; animation:none !important; } }
 </style>
 </head>
-<body>
+<body${empty ? ' class="empty"' : ""}>
 <div id="app">
   <div id="bar">
     <span class="dot" id="conn" title="Hook connection"></span>
+    <button id="openbtn" class="icon" title="Open a different game: a build folder or a URL (O)" aria-haspopup="dialog" aria-controls="launch"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M2 12V4.5A1.5 1.5 0 0 1 3.5 3h2.4l1.5 1.5h4.1A1.5 1.5 0 0 1 13 6v1"/><path d="M2 12l1.6-4.2A1.2 1.2 0 0 1 4.7 7h9.1a.7.7 0 0 1 .65.95L13 12.1a1.2 1.2 0 0 1-1.1.9H2.9A.9.9 0 0 1 2 12z"/></svg></button>
     <span class="grow"><b id="title">${escapeHtml(title)}</b><span class="muted" id="source">${escapeHtml(source)}</span></span>
     <span class="grp env" id="badges"></span>
     <span class="sep"></span>
@@ -174,7 +211,21 @@ export function renderShell({ title, source, gameSrc, isolation }) {
       <div class="act"><button type="button" id="devcancel">Cancel</button><span class="grow"></span><button type="submit" class="primary" id="devsave">Save profile</button></div>
     </form>
   </div>
-  <div id="stage"><div id="wrap"><iframe id="game" src="${escapeHtml(gameSrc)}" allow="autoplay; fullscreen; gamepad; xr-spatial-tracking; cross-origin-isolated" allowfullscreen></iframe></div><span id="vplabel"></span></div>
+  <div id="stage"><div id="wrap"><iframe id="game" src="${escapeHtml(gameSrc)}" allow="autoplay; fullscreen; gamepad; xr-spatial-tracking; cross-origin-isolated" allowfullscreen></iframe></div><span id="vplabel"></span><div id="launch" role="dialog" aria-modal="true" aria-labelledby="ltitle"${empty ? "" : " hidden"}>
+    <div class="lc">
+      <div class="lhead">
+        <div class="lt"><div><h2 id="ltitle">Open a game</h2><p>A web build folder (Godot, Unity, Phaser, Three.js…) or the URL of a dev server or a deployed game.</p></div>
+          <button id="lclose" class="icon" title="Close (Esc)" aria-label="Close"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></div>
+        <form id="lform" autocomplete="off"><input id="lin" type="text" spellcheck="false" placeholder="~/Games/my-game/builds/web   or   https://example.com/play/" aria-label="Folder path or URL" /><button type="button" id="lpick" title="Choose a folder with your system's file dialog">Choose folder…</button><button type="submit" class="primary" id="lgo">Open</button></form>
+        <div id="lmsg" role="status"></div>
+      </div>
+      <div class="lcols">
+        <section aria-labelledby="lrech"><h3 id="lrech">Recent</h3><div class="llist" id="lrec"></div></section>
+        <section aria-label="Browse folders"><h3><span style="flex:none">Browse</span><span id="lcrumb"></span></h3><div id="lhere" hidden></div><div class="llist" id="lfs"></div></section>
+      </div>
+      <div class="lfoot"><span class="grow tip">Scripts and agents can skip this: <code>gamelab serve &lt;folder|url&gt;</code></span><span class="esc"><kbd>Esc</kbd> close</span></div>
+    </div>
+  </div></div>
   <div id="drawer">
     <div id="grip"></div>
     <div id="dbar">
@@ -243,6 +294,7 @@ export function renderShell({ title, source, gameSrc, isolation }) {
     if (e.metaKey || e.ctrlKey || e.target !== document.body) return;
     if (e.key === "r" || e.key === "R") reload();
     if (e.key === "d" || e.key === "D") setDrawer($("drawer").classList.contains("hidden"));
+    if (e.key === "o" || e.key === "O") { e.preventDefault(); openLauncher(); }
   });
 
   function reload() {
@@ -1071,6 +1123,129 @@ export function renderShell({ title, source, gameSrc, isolation }) {
     } catch (err) { sendResult(cmd.id, false, null, String(err && err.message || err)); }
   }
 
+
+  // ---- launcher: pick a build folder or URL ----
+  var EMPTY = document.body.classList.contains("empty");
+  var LICON = { dir: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.4l1.5 1.5h5.1A1.5 1.5 0 0 1 14 6v5.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5z"/></svg>', url: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="8" cy="8" r="5.75"/><path d="M2.5 8h11M8 2.25c1.9 2.1 1.9 9.4 0 11.5M8 2.25c-1.9 2.1-1.9 9.4 0 11.5"/></svg>', up: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 13V3.5M4 7.5l4-4 4 4"/></svg>' };
+  var L = { st: null, path: null, seq: 0, timer: 0, busy: false, lastFocus: null };
+  function jf(url, method, body) {
+    return fetch(url, { method: method || "GET", headers: { "Content-Type": "application/json" }, body: body ? JSON.stringify(body) : undefined })
+      .then(function (r) { return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ("HTTP " + r.status)); return j; }); });
+  }
+  function tilde(p) { var h = L.st && L.st.home; return h && p.indexOf(h) === 0 ? "~" + p.slice(h.length) : p; }
+  function ago(t) { var s = (Date.now() - t) / 1000; return s < 60 ? "now" : s < 3600 ? Math.round(s / 60) + "m" : s < 86400 ? Math.round(s / 3600) + "h" : Math.round(s / 86400) + "d"; }
+  function lmsg(text, err) { var m = $("lmsg"); m.className = err ? "err" : ""; m.innerHTML = text; }
+  function looksUrl(v) { return /^https?:\\/\\//i.test(v) || (!/^[~.\\/\\\\]|^[a-z]:[\\\\\\/]/i.test(v) && /^[\\w-]+(\\.[\\w-]+)+(:\\d+)?(\\/|$)/i.test(v) && !/\\s/.test(v)); }
+  function openLauncher() {
+    var el = $("launch"); L.lastFocus = document.activeElement;
+    el.hidden = false; requestAnimationFrame(function () { el.classList.add("open"); });
+    $("openbtn").setAttribute("aria-expanded", "true");
+    jf("/__gp/api/launcher/state").then(function (st) {
+      L.st = st; renderRecents();
+      var start = st.mode === "dir" && st.source ? parentOf(st.source) : null;
+      if (!start) { for (var i = 0; i < st.recents.length; i++) if (st.recents[i].kind === "dir") { start = parentOf(st.recents[i].value); break; } }
+      browse(start || st.cwd || st.home);
+      if (!$("lin").value && st.mode !== "none") $("lin").value = st.mode === "dir" ? tilde(st.source) : st.source;
+    }).catch(function (e) { lmsg(esc(e.message), true); });
+    setTimeout(function () { $("lin").focus(); $("lin").select(); }, 30);
+  }
+  function closeLauncher() {
+    if (EMPTY) return;
+    var el = $("launch"); el.classList.remove("open"); $("openbtn").setAttribute("aria-expanded", "false");
+    setTimeout(function () { el.hidden = true; }, 180);
+    if (L.lastFocus && L.lastFocus.focus) L.lastFocus.focus();
+  }
+  function parentOf(p) { var i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\\\")); return i > 0 ? p.slice(0, i) : p; }
+  function renderRecents() {
+    var list = (L.st && L.st.recents) || [], cur = L.st && L.st.source, h = "";
+    list.forEach(function (r) {
+      var isDir = r.kind === "dir", name, sub;
+      if (isDir) { var parts = r.value.split(/[\\/\\\\]/).filter(Boolean); name = parts.slice(-2).join("/"); sub = tilde(r.value); }
+      else { try { var u = new URL(r.value); name = u.host; sub = u.pathname + u.search; } catch (e) { name = r.value; sub = ""; } }
+      var isCur = cur && (r.value === cur || (!isDir && r.value.indexOf(cur) === 0 && L.st.mode === "url"));
+      h += '<div class="lrow' + (isDir ? " game" : "") + '"><button type="button" class="lnav" data-kind="' + r.kind + '" data-open="' + esc(r.value) + '" title="Open ' + esc(r.value) + '">' + LICON[isDir ? "dir" : "url"] + '<span class="ln"><b>' + esc(name) + (isCur ? ' <span class="tag cur">open now</span>' : "") + '</b><span>' + (sub ? "\\u200E" + esc(sub) + "\\u200E" : "") + '</span></span></button><span class="lmeta">' + ago(r.at) + '</span><button type="button" class="icon lx" data-forget="' + esc(r.value) + '" data-kind="' + r.kind + '" title="Remove from recents" aria-label="Remove from recents"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 5l6 6M11 5l-6 6"/></svg></button></div>';
+    });
+    $("lrec").innerHTML = h || '<div class="lempty">Nothing yet. Games you open, here or with <code>gamelab serve</code>, show up in this list.</div>';
+  }
+  function browse(p, quiet) {
+    var seq = ++L.seq;
+    return jf("/__gp/api/launcher/fs?path=" + encodeURIComponent(p)).then(function (d) {
+      if (seq !== L.seq) return d;
+      L.path = d.path; renderFs(d); return d;
+    }).catch(function (e) { if (!quiet && seq === L.seq) lmsg(esc(e.message), true); return null; });
+  }
+  function renderFs(d) {
+    var sep = d.path.indexOf("\\\\") >= 0 && d.path.indexOf("/") < 0 ? "\\\\" : "/";
+    var parts = d.path.split(/[\\/\\\\]/), acc = "", crumbs = [];
+    parts.forEach(function (seg, i) { acc = i === 0 ? (seg || sep) : (acc.slice(-1) === sep ? acc : acc + sep) + seg; if (seg || i === 0) crumbs.push({ label: i === 0 ? (seg || sep) : seg, path: acc }); });
+    var home = L.st && L.st.home;
+    for (var ci = crumbs.length - 1; ci >= 0; ci--) if (home && crumbs[ci].path === home) { crumbs = crumbs.slice(ci); crumbs[0].label = "~"; break; }
+    var ch = crumbs.map(function (c) { return '<button type="button" data-nav="' + esc(c.path) + '">' + esc(c.label) + "</button>"; }).join('<span class="cs">/</span>');
+    $("lcrumb").innerHTML = ch; $("lcrumb").title = d.path;
+    var here = $("lhere");
+    if (d.entry) { here.hidden = false; here.innerHTML = '<span class="grow">This folder is a <b>web build</b> <span class="muted">(' + esc(d.entry) + ')</span></span><button type="button" class="primary lgo" data-kind="dir" data-open="' + esc(d.path) + '">Open</button>'; }
+    else here.hidden = true;
+    var h = "";
+    if (d.parent) h += '<div class="lrow"><button type="button" class="lnav" data-nav="' + esc(d.parent) + '" title="Up to ' + esc(d.parent) + '">' + LICON.up + '<span class="ln"><b>..</b></span></button></div>';
+    var games = d.dirs.filter(function (x) { return x.entry; }), rest = d.dirs.filter(function (x) { return !x.entry; });
+    games.concat(rest).forEach(function (x) {
+      h += '<div class="lrow' + (x.entry ? " game" : "") + '"><button type="button" class="lnav" data-nav="' + esc(x.path) + '">' + LICON.dir + '<span class="ln"><b>' + esc(x.name) + (x.entry ? ' <span class="tag game">' + esc(x.entry) + "</span>" : "") + "</b></span></button>" + (x.entry ? '<button type="button" class="lgo" data-kind="dir" data-open="' + esc(x.path) + '">Open</button>' : "") + "</div>";
+    });
+    if (!d.dirs.length) h += '<div class="lempty">' + (d.entry ? "No sub-folders." : "No sub-folders here, and no .html entry either.") + "</div>";
+    if (d.truncated) h += '<div class="lempty">Showing the first 400 folders.</div>';
+    $("lfs").innerHTML = h; $("lfs").scrollTop = 0;
+  }
+  function openSource(kind, value) {
+    if (L.busy || !value) return;
+    L.busy = true; $("lgo").disabled = true; $("lgo").textContent = "Opening\\u2026";
+    lmsg(kind === "url" ? "Connecting to " + esc(value) + "\\u2026" : "Loading " + esc(tilde(value)) + "\\u2026");
+    jf("/__gp/api/source", "POST", kind === "url" ? { url: value } : { dir: value })
+      .then(function () { location.reload(); })
+      .catch(function (e) { L.busy = false; $("lgo").disabled = false; $("lgo").textContent = "Open"; lmsg(esc(e.message), true); });
+  }
+  $("openbtn").onclick = function () { $("launch").hidden ? openLauncher() : closeLauncher(); };
+  $("lclose").onclick = closeLauncher;
+  $("launch").addEventListener("mousedown", function (e) { if (e.target === this) closeLauncher(); });
+  $("launch").addEventListener("keydown", function (e) { if (e.key === "Escape") { e.stopPropagation(); closeLauncher(); } });
+  $("launch").addEventListener("click", function (e) {
+    var b = e.target.closest("button"); if (!b) return;
+    if (b.dataset.forget) { jf("/__gp/api/launcher/recents", "DELETE", { kind: b.dataset.kind, value: b.dataset.forget }).then(function (j) { L.st.recents = j.recents; renderRecents(); }); return; }
+    if (b.dataset.open) return openSource(b.dataset.kind, b.dataset.open);
+    if (b.dataset.nav) { browse(b.dataset.nav).then(function (d) { if (d) { $("lin").value = tilde(d.path); lmsg(d.entry ? 'Web build found: <span class="k">' + esc(d.entry) + "</span>. Press Enter to open." : ""); } }); }
+  });
+  $("lform").onsubmit = function (e) {
+    e.preventDefault();
+    var v = $("lin").value.trim();
+    if (!v) { lmsg("Type a folder path or a URL, choose a folder, or pick one from the lists below.", true); return; }
+    if (looksUrl(v)) return openSource("url", /^https?:\\/\\//i.test(v) ? v : "https://" + v);
+    openSource("dir", v);
+  };
+  $("lin").addEventListener("input", function () {
+    var v = this.value.trim(); clearTimeout(L.timer);
+    if (!v) { lmsg(""); return; }
+    if (looksUrl(v)) { lmsg("Opens " + esc(/^https?:\\/\\//i.test(v) ? v : "https://" + v) + " through the gamelab proxy (hook injected)."); return; }
+    L.timer = setTimeout(function () {
+      browse(v, true).then(function (d) {
+        if ($("lin").value.trim() !== v) return;
+        if (!d) lmsg("No such folder yet \\u2014 keep typing, or choose one.");
+        else lmsg(d.entry ? 'Web build found: <span class="k">' + esc(d.entry) + "</span>. Press Enter to open." : d.dirs.some(function (x) { return x.entry; }) ? "Not a build itself \\u2014 the green folders below are." : "No .html entry in this folder.");
+      });
+    }, 250);
+  });
+  $("lpick").onclick = function () {
+    var btn = this; btn.disabled = true; btn.textContent = "Waiting for dialog\\u2026";
+    jf("/__gp/api/launcher/pick", "POST", { start: L.path }).then(function (j) {
+      if (!j.path) return;
+      $("lin").value = tilde(j.path);
+      return browse(j.path).then(function (d) {
+        if (d && d.entry) openSource("dir", d.path);
+        else if (d) lmsg(d.dirs.some(function (x) { return x.entry; }) ? "That folder holds builds \\u2014 open one of the green folders below." : "No .html entry in that folder. Pick the export folder (the one with index.html).", !d.dirs.some(function (x) { return x.entry; }));
+      });
+    }).catch(function (e) { lmsg(esc(e.message), true); })
+      .then(function () { btn.disabled = false; btn.textContent = "Choose folder\\u2026"; });
+  };
+  if (EMPTY) openLauncher();
+
   // ---- SSE from the extension ----
   var es = new EventSource("/__gp/events");
   es.addEventListener("state", function (e) { setState(JSON.parse(e.data)); });
@@ -1080,6 +1255,7 @@ export function renderShell({ title, source, gameSrc, isolation }) {
     addLog({ level: "sys", text: "— reloading: " + (d.reason || "requested") + " —", t: Date.now() });
     reload();
   });
+  es.addEventListener("source", function () { location.reload(); });
   es.addEventListener("hint", function (e) { addLog({ level: "sys", text: JSON.parse(e.data).text, t: Date.now() }); });
   applyViewport(); loadDevices();
   fetch("/__gp/api/info").then(function (r) { return r.json(); }).then(function (j) { if (j && j.ui) setState(j.ui); }).catch(function () {});

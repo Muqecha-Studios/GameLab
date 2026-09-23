@@ -72,7 +72,7 @@ export const TOOLS = [
     },
     {
         name: "get_history",
-        description: "Time series from the panel's Timeline tab: FPS, worst frame ms, draw calls/frame, JS heap and engine timings (processMs/physicsMs/…/entities when the game exposes window.__game) sampled every 0.5 s, plus marks (game events, console errors, reloads). Use it to see when a stall happened relative to events, or to compare before/after an action.",
+        description: "Time series from the panel's Timeline tab sampled every 0.5 s: fps, worstMs, cpuMs (main-thread time per frame), gpuMs (GPU timer, Chromium desktop only), inputMs (input→frame latency when input happened), drawCalls, progSwitches/texBinds/fboBinds/stateChanges per frame, heapMB, resources {texMemMB, bufMemMB, wasmMB, domNodes} and engine timings (processMs/physicsMs/…/entities when the game exposes window.__game), plus marks (game events, console errors, reloads). Use it to see when a stall happened relative to events, or to compare before/after an action.",
         inputSchema: { type: "object", properties: {
             windowMs: { type: "number", description: "How far back to return (ms). Default 60000; 0 = everything recorded (up to ~20 min)." },
             step: { type: "integer", minimum: 1, description: "Return every Nth sample (1 = every 0.5 s). Use 4–10 for long windows." },
@@ -81,7 +81,7 @@ export const TOOLS = [
     },
     {
         name: "get_metrics",
-        description: "Detailed in-page performance metrics from the hook: frame-time percentiles (p50/p95/p99/max), frame hitches > 50 ms with timestamps, WebGL counters (draw calls, instances, texture uploads, shader compiles, buffer uploads, context losses), heap and wasm size, visibility state.",
+        description: "Detailed in-page performance metrics from the hook. frame: p50/p95/p99/max ms, 1%/0.1% lows, jitter, dropped %. cpu: main-thread ms per frame (p50/p95/max). gpu: GPU ms per frame via timer query, or {unavailable: reason}. bound: {kind: cpu|gpu|gpu?|mixed|vsync|vsync-tight, why} — where the frame budget goes. hitches (>50 ms) and longTasks, each with a `cause` attributed from what happened in that window (shader compile, texture/buffer upload, wasm memory grow, GC, game event). render: canvas vs display resolution, scale, megapixels. webgl: draws, instances, uploads (count + MB), shader compiles, program switches/texture binds/FBO binds/state changes totals, readbacks, live object counts and estimated texture/buffer/renderbuffer MB. memory: JS heap, wasm linear memory + grows, GC count, DOM nodes. input: event→frame latency p50/p95 + Event Timing p95. audio: contexts, state, latency. threads: workers, SharedArrayBuffer, isolation, cores. Plus the game probe snapshot (window.__game) when present.",
         inputSchema: { type: "object", properties: { target: TARGET_PROP, resetHitches: { type: "boolean", description: "Clear the hitch log and frame-time samples after reading." } }, additionalProperties: false },
         handler: async (p, i) => {
             const d = p.driverFor(i?.target ?? "auto");

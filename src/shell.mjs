@@ -576,17 +576,61 @@ export function renderShell({ title, source, gameSrc, isolation }) {
     var out = [], f = m.frame, t = perf.timeline, r = perf.rates, w = m.webgl, gameplay = m.uptimeMs > 10000;
     var add = function (cls, text) { out.push({ cls: cls, text: text }); };
     if (w.contextLostCount) add("bad", "WebGL context was lost " + w.contextLostCount + "× — check the engine recovers (screen not black, no 'does not belong to this context' spam).");
+    var bd = m.bound || {}, c = m.cpu || {}, gp = m.gpu || {}, rr = m.render || {}, last = hist.length ? hist[hist.length - 1] : {}, mm = m.memory || {};
+    var gpuTxt = gp.p50Ms != null ? ", GPU " + gp.p50Ms + " ms" : "";
     if (f.samples > 60) {
-      if (f.p95Ms > 33.4) add("bad", "Not holding 30 fps: p95 frame time " + f.p95Ms + " ms (p99 " + f.p99Ms + " ms). Profile to find the hot path.");
+      if (f.p95Ms > 33.4) add("bad", "Not holding 30 fps: p95 frame time " + f.p95Ms + " ms (p99 " + f.p99Ms + " ms).");
       else if (f.p95Ms > 17.5) add("warn", "Not holding 60 fps: p95 frame time " + f.p95Ms + " ms (p99 " + f.p99Ms + " ms).");
-      else add("ok", "Frame time steady: p95 " + f.p95Ms + " ms, p99 " + f.p99Ms + " ms.");
+      else if (bd.kind === "vsync-tight") add("warn", "Holding 60 fps with only ~" + bd.headroomMs + " ms headroom (main thread " + c.p50Ms + " ms" + gpuTxt + ") — a slower device will drop frames. Try a low-end device profile or lab set_throttle to see where it breaks.");
+      else add("ok", "Frame time steady: p95 " + f.p95Ms + " ms, p99 " + f.p99Ms + " ms" + (bd.kind === "vsync" ? "; ~" + bd.headroomMs + " ms headroom (main " + c.p50Ms + " ms" + gpuTxt + ")" : "") + ".");
+      // where the budget goes
+      if (bd.kind === "cpu") {
+        var gm0 = m.game && m.game.present && m.game.metrics && !m.game.metrics.__error ? m.game.metrics : null, engHint = "";
+        if (gm0 && typeof gm0.physicsMs === "number" && gm0.physicsMs > c.p50Ms * 0.4) engHint = " Engine physics alone is " + gm0.physicsMs + " ms.";
+        else if (gm0 && typeof gm0.processMs === "number" && gm0.processMs > c.p50Ms * 0.4) engHint = " Engine process (scripts) alone is " + gm0.processMs + " ms.";
+        add("bad", "CPU-bound: the main thread spends " + c.p50Ms + " ms of each " + f.p50Ms + " ms frame" + gpuTxt + "." + engHint + " Press ● Profile while playing to see the hot functions.");
+      } else if (bd.kind === "gpu") {
+        add("bad", "GPU-bound: " + gp.p50Ms + " ms of GPU work per " + f.p50Ms + " ms frame (main thread only " + c.p50Ms + " ms). Cut fill rate first — render scale " + rr.scale + "× (" + rr.megapixels + " MP), post-processing, overdraw, shadows; then draw calls (" + f.lastDrawCalls + "/frame) and program switches (" + (last.progSwitches != null ? last.progSwitches : "?") + "/frame).");
+      } else if (bd.kind === "gpu?") {
+        add("warn", "Main thread only uses " + c.p50Ms + " ms of a " + f.p50Ms + " ms frame, so the wait is elsewhere — GPU (no timer query here; open in desktop Chrome to confirm), a " + Math.round(1000 / f.p50Ms) + " Hz display, or a throttled tab. Quick test: lower the render resolution — if fps rises, it's the GPU.");
+      } else if (bd.kind === "mixed") {
+        add("warn", "No single bottleneck: frame " + f.p50Ms + " ms, main thread " + c.p50Ms + " ms" + gpuTxt + ". Look at hitches, long tasks and jitter rather than average cost.");
+      }
+      if (f.low1PctFps != null && f.p95Ms <= 17.5 && f.low1PctFps < 40) add("warn", "Smooth on average but stuttery: 1% low is " + f.low1PctFps + " fps" + (f.jitterMs != null ? ", jitter " + f.jitterMs + " ms" : "") + ". The hitch list below says why.");
+      else if (f.jitterMs != null && f.jitterMs > 8 && f.p95Ms <= 33.4) add("warn", "Uneven frame pacing: jitter " + f.jitterMs + " ms, " + f.droppedPct + "% of frames > 1.5× the median — feels worse than a steady lower fps.");
     }
     if (m.hitches.count) {
-      var rec = m.hitches.recent, spiky = rec.filter(function (h) { return h.draws > 2 * Math.max(1, f.lastDrawCalls); }).length;
-      var late = rec.filter(function (h) { return (t && t.firstWebglDrawMs != null) ? h.at > t.firstWebglDrawMs + 3000 : h.at > 8000; }).length;
-      if (late) add("warn", late + " hitch" + (late > 1 ? "es" : "") + " > " + m.hitches.thresholdMs + " ms during gameplay (worst " + Math.max.apply(null, rec.map(function (h) { return h.dt; })) + " ms)" + (spiky ? "; " + spiky + " coincide with a draw-call spike (scene/level load or spawn burst?)" : "; not draw-related — likely GC, asset decode, shader compile or a JS/wasm spike. Profile during a hitch.") );
-      else add("info", m.hitches.count + " hitch" + (m.hitches.count > 1 ? "es" : "") + " at startup only (wasm compile / first draw) — fine.");
+      var rec = m.hitches.recent, gpStart = (t && t.firstWebglDrawMs != null) ? t.firstWebglDrawMs + 3000 : 8000;
+      var lateH = rec.filter(function (h) { return h.at > gpStart; });
+      if (lateH.length) {
+        var by = { compile: 0, upload: 0, gc: 0, grow: 0, sync: 0, load: 0, event: 0, script: 0 }, lastEvent = null;
+        lateH.forEach(function (h) {
+          var cz = h.cause || "";
+          if (/^script \\(no /.test(cz)) by.script++; else if (/shader compile/.test(cz)) by.compile++; else if (/texture upload|buffer upload/.test(cz)) by.upload++; else if (/wasm memory grow/.test(cz)) by.grow++; else if (/\\bGC\\b/.test(cz)) by.gc++; else if (/readPixels/.test(cz)) by.sync++; else if (/asset loaded/.test(cz)) by.load++; else if (/during event/.test(cz)) { by.event++; lastEvent = cz.replace(/.*during event /, ""); } else by.script++;
+        });
+        var bits = [];
+        if (by.compile) bits.push(by.compile + " shader compile"); if (by.upload) bits.push(by.upload + " texture/buffer upload"); if (by.grow) bits.push(by.grow + " wasm memory grow"); if (by.gc) bits.push(by.gc + " GC"); if (by.sync) bits.push(by.sync + " GPU readback"); if (by.load) bits.push(by.load + " asset load"); if (by.event) bits.push(by.event + " during '" + lastEvent + "'"); if (by.script) bits.push(by.script + " unattributed (script/wasm)");
+        add("warn", lateH.length + " hitch" + (lateH.length > 1 ? "es" : "") + " > " + m.hitches.thresholdMs + " ms during gameplay (worst " + Math.max.apply(null, lateH.map(function (h) { return h.dt; })) + " ms): " + bits.join(", ") + ".");
+        if (by.compile) add("warn", "Shader compiles mid-game cause hitches — warm up every material/shader variant on the loading screen (draw one off-screen instance of each), or precompile with your engine's shader cache.");
+        if (by.upload) add("warn", "Texture/buffer uploads mid-game — assets are being decoded and uploaded on first use. Preload and upload them during the loading screen, or stream them in small chunks.");
+        if (by.grow) add("warn", "wasm memory growing mid-game copies the whole heap each time — raise the initial memory size in the export settings (Godot: Memory Size / Unity: Initial Memory Size) so it starts large enough.");
+        if (by.gc) add("warn", "GC pauses mid-game — reduce per-frame allocations (closures, arrays, vectors, string concatenation in the game loop); pool objects.");
+        if (by.sync) add("warn", "readPixels forces the CPU to wait for the GPU — avoid per-frame readbacks (color picking, screenshots); use async PBO reads or do it every N frames.");
+        if (by.event) add("info", "Hitches coincide with the '" + lastEvent + "' event — whatever that handler does (spawn, scene change, load) is the culprit; profile around it.");
+        if (by.script && !by.compile && !by.upload && !by.gc) add("info", "Unattributed hitches are usually a JS/wasm spike (pathfinding, physics burst, level generation). Press ● Profile and reproduce one.");
+      } else add("info", m.hitches.count + " hitch" + (m.hitches.count > 1 ? "es" : "") + " at startup only (wasm compile / first draw) — fine.");
     }
+    if (rr.scale > 1.05) add("warn", "Rendering at " + rr.scale + "× the display resolution (" + rr.width + "×" + rr.height + " for " + Math.round(rr.cssWidth) + "×" + Math.round(rr.cssHeight) + " @" + rr.dpr + "x) — wasted fill rate. Cap the back-buffer to the device pixel size.");
+    else if (rr.megapixels > 3 && rr.dpr > 1 && (bd.kind === "gpu" || bd.kind === "gpu?")) add("info", "Rendering " + rr.megapixels + " MP on a " + rr.dpr + "x display — a 0.75× render scale cuts GPU work ~45% with little visible loss on phones.");
+    if (gameplay && last.progSwitches > 200) add("warn", last.progSwitches + " program switches/frame — sort draws by material/shader so consecutive draws share a program; merge materials.");
+    if (gameplay && last.stateChanges > 1500) add("warn", last.stateChanges + " GL state changes/frame — batch draws with the same blend/depth/cull state.");
+    if (w.readbacks) add("warn", w.readbacks + " GPU readback" + (w.readbacks > 1 ? "s" : "") + " (readPixels) — each one stalls until the GPU finishes; avoid per-frame reads.");
+    if (w.estMemoryMB && w.estMemoryMB.textures > 512) add("warn", "~" + w.estMemoryMB.textures + " MB of textures live on the GPU — mobile browsers evict/kill tabs around 1 GB; use compressed textures (KTX2/Basis/ASTC) or smaller atlases.");
+    if (gameplay && mm.wasmGrows > 3) add("info", "wasm memory grew " + mm.wasmGrows + " times (now " + mm.wasmMemoryMB + " MB) — set the initial memory size to ~" + Math.ceil(mm.wasmMemoryMB / 16) * 16 + " MB in the export settings.");
+    if (mm.domNodes > 3000) add("warn", mm.domNodes + " DOM nodes — a large HTML UI overlay costs style/layout time every frame; render HUD in-engine or keep the overlay small.");
+    if (m.input && m.input.samples >= 5 && m.input.p95Ms > 100) add("warn", "Input → frame latency p95 " + m.input.p95Ms + " ms — the game feels laggy. Handle input before the simulation step and shorten the frame.");
+    if (m.audio && m.audio.state === "suspended" && gameplay) add("warn", "AudioContext is suspended — browsers require a user gesture; call resume() on the first click/tap or the game stays silent.");
+    if (m.audio && m.audio.outputLatencyMs > 150) add("info", "Audio output latency " + m.audio.outputLatencyMs + " ms — sound effects will feel late; use a smaller buffer / 'interactive' latency hint if the engine allows.");
     if (gameplay && perf.shaderBase !== null && w.shaderCompiles - perf.shaderBase > 0) add("warn", (w.shaderCompiles - perf.shaderBase) + " shader compile" + (w.shaderCompiles - perf.shaderBase > 1 ? "s" : "") + " after the first 10 s — compiling on first use causes hitches; warm up materials/shaders on a loading screen.");
     if (gameplay && r.tex > 2) add("warn", "Texture uploads every frame (" + r1(r.tex) + "/s) — video/canvas→texture or dynamic atlases; cache or throttle if possible.");
     if (f.lastDrawCalls > 800) add("warn", f.lastDrawCalls + " draw calls/frame — batch sprites/meshes or use instancing.");

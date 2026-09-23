@@ -16,6 +16,7 @@ import { renderShell } from "./shell.mjs";
 import { VIEWPORTS, allDevices, resolveDevice, upsertUserDevice, deleteUserDevice, emulationFor, labOptionsFor, GROUP_LABELS, USER_DEVICES_PATH } from "./devices.mjs";
 import { HOOK_PATH, serveStatic, proxyRequest, proxyUpgrade, detectEntry, looksLikeWasmExport, applyIsolation, isLoopback } from "./server.mjs";
 import { Lab } from "./lab.mjs";
+import { EXAMPLES, GUIDE } from "./guide.mjs";
 import { readRecents, addRecent, removeRecent, listDir, pickFolder, PICKER_AVAILABLE } from "./launcher.mjs";
 
 export const SHELL_PREFIX = "/__gp/";
@@ -266,6 +267,10 @@ export class Preview {
             res.writeHead(200, headers);
             return res.end(renderShell({ title: this.title, source: this.source, gameSrc: this.gameSrc, isolation: this.ui.isolation, mode: this.mode }));
         }
+        if (route === "guide.json") {
+            res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "max-age=300" });
+            return res.end(JSON.stringify({ guide: GUIDE, examples: EXAMPLES }));
+        }
         if (url.pathname === HOOK_PATH) {
             res.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8", "Cache-Control": "no-store" });
             return res.end(`window.__gpEmu = ${JSON.stringify(this.ui.emulation)};\n` + HOOK_JS);
@@ -342,7 +347,7 @@ export class Preview {
 
     async _handleLauncher(route, url, req, res) {
         if (route === "api/launcher/state") {
-            return json(res, 200, { mode: this.mode, source: this.source, recents: await readRecents(), cwd: this._cwd ?? process.cwd(), home: os.homedir(), picker: PICKER_AVAILABLE });
+            return json(res, 200, { mode: this.mode, source: this.source, recents: await readRecents(), examples: EXAMPLES, cwd: this._cwd ?? process.cwd(), home: os.homedir(), picker: PICKER_AVAILABLE });
         }
         if (route === "api/launcher/fs") return json(res, 200, await listDir(expandHome(url.searchParams.get("path") || this._cwd || process.cwd())));
         if (route === "api/launcher/pick" && req.method === "POST") {

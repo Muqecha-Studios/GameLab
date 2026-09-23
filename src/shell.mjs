@@ -112,6 +112,34 @@ export function renderShell({ title, source, gameSrc, isolation, mode }) {
   .lfoot kbd { font:10.5px var(--mono); color:var(--fg); border:1px solid var(--bd2); border-radius:3px; padding:0 4px; }
   body.empty .lfoot .esc, body.empty #lclose { display:none; }
   @media (max-width:720px) { .lcols { grid-template-columns:minmax(0,1fr); } .lcols > section + section { border-left:0; border-top:1px solid var(--bd); } .llist { height:180px; } .lfoot .tip { display:none; } }
+  /* guide */
+  #helpbtn { margin-left:4px; font:600 12.5px system-ui, sans-serif; }
+  #guide { position:fixed; inset:38px 0 0 auto; width:min(760px, 100vw); z-index:25; display:flex; flex-direction:column; background:#12151c; border-left:1px solid var(--bd2); box-shadow:-18px 0 50px rgba(0,0,0,.5); transform:translateX(24px); opacity:0; transition:transform var(--ease), opacity var(--ease); }
+  #guide.open { transform:none; opacity:1; } #guide[hidden] { display:none; }
+  .gh { display:flex; gap:8px; align-items:center; padding:10px 12px; border-bottom:1px solid var(--bd); }
+  .gh h2 { margin:0 6px 0 2px; font-size:13px; font-weight:600; flex:none; } #gsearch { flex:1; min-width:0; height:28px; }
+  .gb { flex:1; min-height:0; display:grid; grid-template-columns:176px minmax(0,1fr); }
+  #gnav { overflow:auto; padding:8px 6px; border-right:1px solid var(--bd); }
+  #gnav button { display:flex; width:100%; height:auto; min-height:26px; padding:4px 8px; background:transparent; border-color:transparent; color:var(--mute); text-align:left; line-height:1.3; }
+  #gnav button:hover { color:var(--fg); background:var(--ctl2); } #gnav button[aria-current=true] { color:var(--fg); background:#1d2a3d; border-color:#2f4b70; }
+  #gnav .gg { padding:10px 8px 3px; font-size:10px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:#5b6371; }
+  #gbody { overflow:auto; padding:16px 22px 28px; font-size:12.5px; line-height:1.6; }
+  #gbody h3 { margin:0 0 4px; font-size:15px; font-weight:600; letter-spacing:-.005em; } #gbody h3 + p { margin:0 0 12px; color:#b8bec9; max-width:64ch; }
+  #gbody h4 { margin:18px 0 6px; font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:var(--mute); }
+  #gbody ol { margin:0 0 14px; padding-left:20px; max-width:66ch; } #gbody ol li { margin:0 0 6px; padding-left:2px; } #gbody ol li::marker { color:var(--acc2); font:600 11px var(--mono); }
+  #gbody dl { margin:0; display:grid; grid-template-columns:minmax(120px, max-content) minmax(0, 60ch); gap:0 18px; }
+  #gbody dt { padding:7px 0; font:600 11.5px var(--mono); color:var(--fg); border-top:1px solid #1a1e27; overflow-wrap:anywhere; }
+  #gbody dd { margin:0; padding:7px 0; color:#b8bec9; border-top:1px solid #1a1e27; }
+  #gbody code { font:11px var(--mono); color:var(--fg); background:#1f232d; padding:1px 5px; border-radius:3px; overflow-wrap:anywhere; }
+  #gbody mark { background:rgba(242,184,75,.22); color:inherit; border-radius:2px; }
+  #gbody .gl { height:auto; padding:0; border:0; background:none; color:var(--acc2); font:inherit; text-decoration:underline; text-decoration-color:rgba(124,188,255,.35); text-underline-offset:2px; cursor:pointer; display:inline; } #gbody .gl:hover { color:var(--fg); }
+  #gbody .gsec + .gsec { margin-top:22px; padding-top:14px; border-top:1px solid var(--bd); }
+  #gbody .gnone { color:var(--mute); padding:24px 0; }
+  #gbody .gex { display:flex; flex-direction:column; gap:6px; margin-top:6px; } #gbody .gex .lrow .ln span { direction:ltr; }
+  .sec > b[data-g] { cursor:pointer; transition:color var(--ease); } .sec > b[data-g]:hover { color:var(--acc2); } .sec > b[data-g]:hover::after { content:" ?"; }
+  @media (max-width:640px) { .gb { grid-template-columns:minmax(0,1fr); grid-template-rows:auto minmax(0,1fr); } #gnav { display:flex; overflow-x:auto; border-right:0; border-bottom:1px solid var(--bd); padding:6px; gap:2px; } #gnav .gg { display:none; } #gnav button { width:auto; flex:none; white-space:nowrap; } #gbody dl { grid-template-columns:minmax(0,1fr); } #gbody dd { border-top:0; padding-top:0; } }
+  .lsub { padding:12px 8px 4px; font-size:10.5px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:var(--mute); }
+  .lrow.ex .lnav svg { color:var(--acc2); }
   /* drawer */
   #drawer { flex:none; height:220px; display:flex; flex-direction:column; border-top:1px solid var(--bd); background:#0c0e12; }
   #drawer.hidden { display:none; }
@@ -194,6 +222,11 @@ export function renderShell({ title, source, gameSrc, isolation, mode }) {
       <button id="toggle" class="tog" aria-pressed="true" aria-controls="drawer" title="Show / hide the Console & Perf drawer (D)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M2 9.5h12"/></svg><span id="tcount"></span></button>
       <button id="reload" class="primary" title="Reload game (R)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.5 2.5v3.2h-3.2"/></svg>Reload</button>
     </span>
+    <button id="helpbtn" class="icon" title="Guide: how to use gamelab and what each number means (?)" aria-haspopup="dialog" aria-controls="guide" aria-expanded="false">?</button>
+  </div>
+  <div id="guide" role="dialog" aria-label="Guide" hidden>
+    <div class="gh"><h2>Guide</h2><input type="search" id="gsearch" placeholder="Search metrics and features — jitter, 1% low, GPU-bound…" aria-label="Search the guide" /><button id="gclose" class="icon" title="Close (Esc)" aria-label="Close guide"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></div>
+    <div class="gb"><nav id="gnav" aria-label="Guide topics"></nav><div id="gbody" tabindex="-1"></div></div>
   </div>
   <div id="devpop" role="dialog" aria-label="Device profile" aria-hidden="true">
     <div class="dp-head"><input type="search" id="devsearch" placeholder="Search devices or type 1280x720" aria-label="Search devices" /><button id="devnew" title="Create a profile of your own">New</button></div>
@@ -225,7 +258,7 @@ export function renderShell({ title, source, gameSrc, isolation, mode }) {
         <section aria-labelledby="lrech"><h3 id="lrech">Recent</h3><div class="llist" id="lrec"></div></section>
         <section aria-label="Browse folders"><h3><span style="flex:none">Browse</span><span id="lcrumb"></span></h3><div id="lhere" hidden></div><div class="llist" id="lfs"></div></section>
       </div>
-      <div class="lfoot"><span class="grow tip">Scripts and agents can skip this: <code>gamelab serve &lt;folder|url&gt;</code></span><span class="esc"><kbd>Esc</kbd> close</span></div>
+      <div class="lfoot"><span class="grow tip">New here? <button type="button" id="lguide" class="gl" style="height:auto;padding:0;border:0;background:none;color:var(--acc2);font:inherit;text-decoration:underline;text-underline-offset:2px">Read the guide</button> · Scripts and agents can skip this: <code>gamelab serve &lt;folder|url&gt;</code></span><span class="esc"><kbd>Esc</kbd> close</span></div>
     </div>
   </div></div>
   <div id="drawer">
@@ -298,6 +331,7 @@ export function renderShell({ title, source, gameSrc, isolation, mode }) {
     if (e.key === "r" || e.key === "R") reload();
     if (e.key === "d" || e.key === "D") setDrawer($("drawer").classList.contains("hidden"));
     if (e.key === "o" || e.key === "O") { e.preventDefault(); openLauncher(); }
+    if (e.key === "?") { e.preventDefault(); $("guide").hidden ? openGuide() : closeGuide(); }
   });
 
   function reload() {
@@ -800,6 +834,8 @@ export function renderShell({ title, source, gameSrc, isolation, mode }) {
     if (perf.profile) h += renderProfile(perf.profile);
     else h += '<div class="sec"><b>Profile</b><div class="muted">Press ● Profile while playing to sample the main thread and list the hottest functions (Chromium; JS Self-Profiling API).' + (perf.profiling ? " Sampling…" : "") + '</div></div>';
     $("perfbody").innerHTML = h;
+    var heads = $("perfbody").querySelectorAll(".sec > b");
+    for (var hi = 0; hi < heads.length; hi++) { var gid = PERF_GUIDE[heads[hi].textContent]; if (gid) { heads[hi].dataset.g = gid; heads[hi].title = "What do these mean? Open the guide"; } }
     $("perfhint").textContent = perf.profiling ? "profiling…" : "";
   }
   var BUDGET_KEYS = { processMs: 1, physicsMs: 1, renderMs: 1, scriptMs: 1, navigationMs: 1, frameMs: 1 };
@@ -1288,7 +1324,16 @@ export function renderShell({ title, source, gameSrc, isolation, mode }) {
       var isCur = cur && (r.value === cur || (!isDir && r.value.indexOf(cur) === 0 && L.st.mode === "url"));
       h += '<div class="lrow' + (isDir ? " game" : "") + '"><button type="button" class="lnav" data-kind="' + r.kind + '" data-open="' + esc(r.value) + '" title="Open ' + esc(r.value) + '">' + LICON[isDir ? "dir" : "url"] + '<span class="ln"><b>' + esc(name) + (isCur ? ' <span class="tag cur">open now</span>' : "") + '</b><span>' + (sub ? "\\u200E" + esc(sub) + "\\u200E" : "") + '</span></span></button><span class="lmeta">' + ago(r.at) + '</span><button type="button" class="icon lx" data-forget="' + esc(r.value) + '" data-kind="' + r.kind + '" title="Remove from recents" aria-label="Remove from recents"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M5 5l6 6M11 5l-6 6"/></svg></button></div>';
     });
-    $("lrec").innerHTML = h || '<div class="lempty">Nothing yet. Games you open, here or with <code>gamelab serve</code>, show up in this list.</div>';
+    if (!h) h = '<div class="lempty">Nothing yet. Games you open, here or with <code>gamelab serve</code>, show up in this list.</div>';
+    var ex = (L.st && L.st.examples) || [];
+    if (ex.length) {
+      h += '<div class="lsub">Examples to try</div>';
+      h += ex.map(exampleRow).join("");
+    }
+    $("lrec").innerHTML = h;
+  }
+  function exampleRow(e) {
+    return '<div class="lrow ex"><button type="button" class="lnav" data-kind="url" data-open="' + esc(e.url) + '" title="' + esc(e.note + " \u2014 " + e.url) + '">' + LICON.url + '<span class="ln"><b>' + esc(e.name) + '</b><span>' + esc(e.tags) + '</span></span></button><button type="button" class="lgo" data-kind="url" data-open="' + esc(e.url) + '">Open</button></div>';
   }
   function browse(p, quiet) {
     var seq = ++L.seq;
@@ -1330,6 +1375,7 @@ export function renderShell({ title, source, gameSrc, isolation, mode }) {
   $("lclose").onclick = closeLauncher;
   $("launch").addEventListener("mousedown", function (e) { if (e.target === this) closeLauncher(); });
   $("launch").addEventListener("keydown", function (e) { if (e.key === "Escape") { e.stopPropagation(); closeLauncher(); } });
+  $("lguide").onclick = function () { openGuide("start"); };
   $("launch").addEventListener("click", function (e) {
     var b = e.target.closest("button"); if (!b) return;
     if (b.dataset.forget) { jf("/__gp/api/launcher/recents", "DELETE", { kind: b.dataset.kind, value: b.dataset.forget }).then(function (j) { L.st.recents = j.recents; renderRecents(); }); return; }
@@ -1368,6 +1414,81 @@ export function renderShell({ title, source, gameSrc, isolation, mode }) {
       .then(function () { btn.disabled = false; btn.textContent = "Choose folder\\u2026"; });
   };
   if (EMPTY) openLauncher();
+
+
+  // ---- guide ----
+  var GD = { data: null, cur: "start", q: "", lastFocus: null };
+  var PERF_GUIDE = { "Frame": "frame", "CPU / GPU": "cpu-gpu", "Hitches": "hitches", "Long tasks": "hitches", "Render": "render", "WebGL": "webgl", "Memory": "memory", "Input": "input", "Audio": "audio", "Threads": "threads", "Load": "load", "Game": "game", "State": "game", "Engine": "game", "Events": "game", "Findings": "findings", "Profile": "profile" };
+  var GROUPS_G = [["Using gamelab", ["start", "shell", "timeline", "lab", "agents"]], ["Metrics", ["frame", "cpu-gpu", "hitches", "render", "webgl", "memory", "input", "audio", "threads", "load", "game", "findings", "profile"]], ["", ["caveats"]]];
+  function loadGuide() {
+    if (GD.data) return Promise.resolve(GD.data);
+    return fetch("/__gp/guide.json").then(function (r) { return r.json(); }).then(function (j) { GD.data = j; return j; });
+  }
+  function gsec(id) { var g = GD.data.guide; for (var i = 0; i < g.length; i++) if (g[i].id === id) return g[i]; return g[0]; }
+  function hl(txt) {
+    var h = esc(txt).replace(/\x60([^\x60]+)\x60/g, "<code>$1</code>");
+    h = h.replace(/&quot;([a-z-]+)&quot;( topic)?/g, function (all, id) { for (var i = 0; i < GD.data.guide.length; i++) if (GD.data.guide[i].id === id) return '<button type="button" class="gl" data-gt="' + id + '">' + esc(GD.data.guide[i].title) + "</button>"; return all; });
+    if (GD.q) { var re = new RegExp("(" + GD.q.replace(/[.*+?^\${}()|[\\]\\\\]/g, "\\\\$&") + ")(?![^<]*>)", "gi"); h = h.replace(re, "<mark>$1</mark>"); }
+    return h;
+  }
+  function renderGuideNav() {
+    var h = "";
+    GROUPS_G.forEach(function (gr) {
+      if (gr[0]) h += '<div class="gg">' + esc(gr[0]) + "</div>"; else h += '<div class="gg" aria-hidden="true">&nbsp;</div>';
+      gr[1].forEach(function (id) { var s = gsec(id); h += '<button type="button" data-gt="' + id + '"' + (!GD.q && GD.cur === id ? ' aria-current="true"' : "") + ">" + esc(s.title) + "</button>"; });
+    });
+    $("gnav").innerHTML = h;
+    var cur = $("gnav").querySelector("[aria-current]"); if (cur) cur.scrollIntoView({ block: "nearest", inline: "nearest" });
+  }
+  function sectionHtml(s, items) {
+    var h = '<div class="gsec" id="g-' + s.id + '"><h3>' + esc(s.title) + "</h3><p>" + hl(s.summary) + "</p>";
+    if (s.steps && !GD.q) h += "<ol>" + s.steps.map(function (st) { return "<li>" + hl(st) + "</li>"; }).join("") + "</ol>";
+    h += "<dl>" + items.map(function (it) { return "<dt>" + hl(it[0]) + "</dt><dd>" + hl(it[1]) + "</dd>"; }).join("") + "</dl>";
+    if (s.id === "start" && !GD.q && GD.data.examples) h += '<h4>Examples to try</h4><div class="gex">' + GD.data.examples.map(exampleRow).join("") + "</div>";
+    return h + "</div>";
+  }
+  function renderGuide() {
+    renderGuideNav();
+    var body = $("gbody"), h = "";
+    if (GD.q) {
+      var q = GD.q.toLowerCase(), n = 0;
+      GD.data.guide.forEach(function (s) {
+        var hitSec = (s.title + " " + s.summary).toLowerCase().indexOf(q) >= 0;
+        var items = s.items.filter(function (it) { return (it[0] + " " + it[1]).toLowerCase().indexOf(q) >= 0; });
+        if (!items.length && !hitSec) return;
+        n += items.length || 1; h += sectionHtml(s, items.length ? items : s.items);
+      });
+      h = h || '<div class="gnone">Nothing matches \\u201c' + esc(GD.q) + '\\u201d. Try a shorter word, or run <code>gamelab guide --list</code>.</div>';
+    } else h = sectionHtml(gsec(GD.cur), gsec(GD.cur).items);
+    body.innerHTML = h; body.scrollTop = 0;
+  }
+  function openGuide(id) {
+    loadGuide().then(function () {
+      var el = $("guide");
+      if (el.hidden) { GD.lastFocus = document.activeElement; el.hidden = false; requestAnimationFrame(function () { el.classList.add("open"); }); }
+      $("helpbtn").setAttribute("aria-expanded", "true");
+      if (id) { GD.cur = id; GD.q = ""; $("gsearch").value = ""; }
+      renderGuide();
+      setTimeout(function () { (id ? $("gbody") : $("gsearch")).focus(); }, 30);
+    }).catch(function (e) { addLog({ level: "error", text: "guide: " + e.message, t: Date.now() }); });
+  }
+  function closeGuide() {
+    var el = $("guide"); if (el.hidden) return;
+    el.classList.remove("open"); $("helpbtn").setAttribute("aria-expanded", "false");
+    setTimeout(function () { el.hidden = true; }, 180);
+    if (GD.lastFocus && GD.lastFocus.focus) GD.lastFocus.focus();
+  }
+  $("helpbtn").onclick = function () { $("guide").hidden ? openGuide() : closeGuide(); };
+  $("gclose").onclick = closeGuide;
+  $("guide").addEventListener("keydown", function (e) { if (e.key === "Escape") { e.stopPropagation(); if (GD.q) { GD.q = ""; $("gsearch").value = ""; renderGuide(); } else closeGuide(); } });
+  $("guide").addEventListener("click", function (e) {
+    var b = e.target.closest("button"); if (!b) return;
+    if (b.dataset.gt) { GD.cur = b.dataset.gt; GD.q = ""; $("gsearch").value = ""; renderGuide(); $("gbody").focus(); return; }
+    if (b.dataset.open) { closeGuide(); openLauncher(); openSource(b.dataset.kind, b.dataset.open); }
+  });
+  var gsT = 0;
+  $("gsearch").addEventListener("input", function () { var v = this.value.trim(); clearTimeout(gsT); gsT = setTimeout(function () { GD.q = v.length >= 2 ? v : ""; renderGuide(); }, 120); });
+  $("perfbody").addEventListener("click", function (e) { var b = e.target.closest(".sec > b[data-g]"); if (b) openGuide(b.dataset.g); });
 
   // ---- SSE from the extension ----
   var es = new EventSource("/__gp/events");

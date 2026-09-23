@@ -58,14 +58,16 @@ Then tell the agent, e.g. *"open the Godot export in builds/web, run it on an iP
 3. `run_scenario`, `get_metrics`, `profile`, `trace_start/stop`, `screenshot` (returned inline as an image), …
 4. `export_test { outDir: "tests/web" }` to turn the run into a CI test.
 
-MCP tools: `open close list` + `reload get_logs clear_logs get_stats get_history get_metrics get_load_timeline profile get_game_state game_command screenshot eval press_key click set_visibility lose_webgl_context set_viewport set_options list_devices save_device delete_device lab_open lab_close lab_status touch gamepad set_throttle headroom trace_start trace_stop run_scenario export_test`. Every tool accepts an optional `instance` (defaults to the last opened) and most accept `target: panel | lab | auto`.
+MCP tools: `open close list guide` + `reload get_logs clear_logs get_stats get_history get_metrics get_load_timeline profile get_game_state game_command screenshot eval press_key click set_visibility lose_webgl_context set_viewport set_options list_devices save_device delete_device lab_open lab_close lab_status touch gamepad set_throttle headroom trace_start trace_stop run_scenario export_test`. Every tool accepts an optional `instance` (defaults to the last opened) and most accept `target: panel | lab | auto`.
 
 Artifacts (screenshots, `.report.json`, `.trace.json`, `.webm`, `.har`) go to `--out`, `$GAMELAB_OUT` or `./.gamelab`.
 
 ## Use it from the terminal / CI
 
 ```sh
-gamelab                                         # opens the shell with a launcher: pick a build folder or paste a URL there
+gamelab                                         # opens the shell with a launcher: pick a build folder, paste a URL, or try an example
+gamelab guide                                   # how to use gamelab and what every metric means (also under ? in the shell)
+gamelab guide cpu-gpu                           # one topic; `gamelab guide --list` for all, or a metric name: `gamelab guide jitter`
 gamelab serve builds/web --open                # serves + opens the shell (stats, console, Perf tab) in your browser
 gamelab serve http://localhost:5173/           # proxy a dev server (Vite/Phaser/etc.)
 gamelab serve https://example.com/play/ --open # profile an already deployed game (any command takes a URL in place of a dir)

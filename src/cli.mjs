@@ -7,6 +7,7 @@ import { createRequire } from "node:module";
 import { openPreview, GameLabError } from "./preview.mjs";
 import { TOOLS, callTool } from "./tools.mjs";
 import { addRecent } from "./launcher.mjs";
+import { guideText, topicList } from "./guide.mjs";
 
 const { version } = createRequire(import.meta.url)("../package.json");
 
@@ -32,6 +33,10 @@ Usage:
       --command sends a window.__game command first (to get into gameplay), --wait seconds before measuring.
   gamelab export <scenario.json> [dir|url] --out DIR [--profile ID] [--device X] [--viewport WxH] [--port N] [--overwrite]
       Write a standalone Playwright project replaying the scenario (for CI).
+  gamelab guide  [topic] [--list]
+      How to use gamelab and what every metric means. Topics: start, shell, timeline, frame, cpu-gpu,
+      hitches, render, webgl, memory, input, audio, threads, load, game, findings, profile, lab, agents,
+      caveats — or a metric name (\`gamelab guide jitter\`). The shell has the same guide under ?.
   gamelab devices [--json]
       List device profiles: 16 seeded (phones, tablets, handhelds, desktops, portal embeds) plus
       your own from ~/.gamelab/devices.json (edit them in the shell's device menu or with save_device).
@@ -51,7 +56,7 @@ const OPTIONS = {
     device: { type: "string" }, landscape: { type: "boolean" }, cpu: { type: "string" }, network: { type: "string" },
     headless: { type: "boolean" }, width: { type: "string" }, height: { type: "string" }, video: { type: "boolean" }, har: { type: "boolean" },
     trace: { type: "boolean" }, json: { type: "boolean" }, viewport: { type: "string" }, overwrite: { type: "boolean" }, profile: { type: "string" },
-    open: { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "v" },
+    open: { type: "boolean" }, list: { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "v" },
     command: { type: "string" }, wait: { type: "string" }, steps: { type: "string" }, hold: { type: "string" }, target: { type: "string" },
 };
 
@@ -171,6 +176,14 @@ export async function main(argv = process.argv.slice(2)) {
                 console.log(`  ${d.id.padEnd(20)} ${d.name.padEnd(22)} ${describeDevice(d)}${d.user ? d.overrides ? "  (edited)" : "  (yours)" : ""}`);
             }
             console.log(`\nUser profiles: ${USER_DEVICES_PATH()}\nUse: gamelab serve . --profile <id> · gamelab run s.json . --profile <id> · gamelab export … --profile <id>`);
+            return;
+        }
+
+        case "guide": {
+            const color = !!process.stdout.isTTY && !process.env.NO_COLOR, width = Math.max(60, Math.min(100, (process.stdout.columns || 90) - 2));
+            if (o.list) { console.log(topicList({ color })); return; }
+            console.log(guideText(rest.join(" ") || undefined, { color, width }));
+            if (!rest.length) console.log("\n" + topicList({ color }));
             return;
         }
 

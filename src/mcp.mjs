@@ -4,6 +4,7 @@
 // Adds three lifecycle tools on top of tools.mjs: open, close, list. Every
 // other tool takes an optional `instance` (defaults to the most recent one).
 
+import { GUIDE, guideText, topicList, sectionText } from "./guide.mjs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -60,6 +61,12 @@ export async function startMcpServer({ filesDir, cwd = process.cwd(), log = (m) 
                 if (current === p) current = [...previews.values()].at(-1) ?? null;
                 return { closed: p.id };
             },
+        },
+        {
+            name: "guide",
+            description: "How to use gamelab and what each metric means (frame p95, 1% low, jitter, main thread vs GPU, bottleneck verdicts, hitch causes, WebGL counters, memory, input latency, engine probe numbers, headroom…). Call with a topic (e.g. \"cpu-gpu\", \"hitches\", \"memory\") or a metric name (e.g. \"jitter\"); omit it for the topic list. Use it to explain results to the user. Needs no open preview.",
+            inputSchema: { type: "object", properties: { topic: { type: "string", description: "Topic id, title word or metric name. Omit to list topics; \"all\" returns the whole guide." } }, additionalProperties: false },
+            handler: async (input) => (input?.topic === "all" ? guideText() : input?.topic ? guideText(input.topic) : topicList() + "\n\n" + sectionText(GUIDE[0])),
         },
         {
             name: "list",

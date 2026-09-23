@@ -352,6 +352,7 @@ export class Preview {
             errorLogs: async () => (await this.command("shell", { kind: "get_logs", level: "error", limit: 50 }))?.entries ?? [],
             clearLogs: () => this.command("shell", { kind: "clear_logs" }),
             stats: () => this.command("shell", { kind: "get_stats" }),
+            history: (opts) => this.command("shell", { kind: "get_history", ...opts }),
             metrics: () => game({ kind: "metrics" }),
             loadTimeline: () => game({ kind: "load_timeline" }),
             resetHitches: () => game({ kind: "reset_hitches" }),

@@ -100,6 +100,12 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   #empty { color:var(--mute); text-align:center; padding:22px 20px; line-height:1.6; } #empty kbd { font:inherit; color:var(--fg); border:1px solid var(--bd2); border-radius:3px; padding:0 4px; }
   #perf { flex:1; overflow:auto; display:none; font:11.5px/1.5 var(--mono); padding:6px 10px 10px; }
   #drawer.perf #perf { display:block; } #drawer.perf #log, #drawer.perf .con { display:none; }
+  #graph { flex:1; display:none; position:relative; min-height:0; overflow:auto; }
+  #drawer.graph #graph { display:block; } #drawer.graph #log, #drawer.graph .con, #drawer.graph #resetm, #drawer.graph #profms, #drawer.graph #prof { display:none; }
+  .gr { display:none; } #drawer.graph .gr { display:inline-flex; } #drawer.graph select.gr { display:inline-block; }
+  #glanes { gap:4px; } #glanes .tog { height:22px; padding:0 8px 0 6px; color:var(--mute); } #glanes .tog[aria-pressed=true] { color:var(--fg); }
+  #gc { display:block; width:100%; cursor:crosshair; touch-action:none; }
+  #gempty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; line-height:1.6; pointer-events:none; }
   .sec { display:grid; grid-template-columns:64px 1fr; gap:2px 10px; padding:4px 0; border-bottom:1px solid #12151b; }
   .sec > b { color:var(--mute); font-weight:600; }
   .kv { display:inline-block; margin-right:14px; } .kv i { color:var(--mute); font-style:normal; margin-right:4px; }
@@ -166,12 +172,15 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   <div id="drawer">
     <div id="grip"></div>
     <div id="dbar">
-      <button class="tab on" data-tab="console">Console</button><button class="tab" data-tab="perf">Perf</button><span class="sep"></span>
+      <button class="tab on" data-tab="console">Console</button><button class="tab" data-tab="perf">Perf</button><button class="tab" data-tab="graph">Timeline</button><span class="sep"></span>
       <button class="f con on" data-f="all">All</button><button class="f con" data-f="log">Log</button><button class="f con" data-f="warn">Warn</button><button class="f con" data-f="error">Errors</button><button class="f con" data-f="event">Events</button>
       <input id="search" class="con" type="search" placeholder="Filter…" aria-label="Filter console" />
       <span class="muted con" id="count"></span>
       <button id="clear" class="con">Clear</button>
+      <span id="glanes" class="gr" role="group" aria-label="Series"></span>
       <span id="perfhint" class="grow"></span>
+      <select id="gwin" class="gr" title="Time window"><option value="30000">30 s</option><option value="60000" selected>1 min</option><option value="300000">5 min</option><option value="0">All</option></select>
+      <button id="gcsv" class="gr" title="Download every sample as CSV">CSV</button>
       <button id="resetm" title="Reset hitch log and frame-time samples">Reset</button>
       <select id="profms" title="Profile duration"><option value="3000">3 s</option><option value="5000" selected>5 s</option><option value="10000">10 s</option><option value="20000">20 s</option></select>
       <button id="prof" class="primary" title="Sample the main thread (JS Self-Profiling API) and list hot functions"><i></i>Profile</button>
@@ -179,6 +188,7 @@ export function renderShell({ title, source, gameSrc, isolation }) {
     </div>
     <div id="log"><div id="empty">No console output yet.<br><span class="muted">console.*, errors, unhandled rejections and game events from the page appear here.</span></div></div>
     <div id="perf"><div id="perfbody" class="muted" style="padding:12px 0">Waiting for the game hook…</div></div>
+    <div id="graph"><canvas id="gc" aria-label="Metrics over time"></canvas><div id="gempty" class="muted">Collecting samples…<br><span>FPS, frame time, draw calls, heap and engine timings are recorded every 0.5 s while the game runs.</span></div></div>
   </div>
 </div>
 <script>
@@ -192,6 +202,7 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   var env = null, connected = false, loadedAt = Date.now();
   var logs = [], filter = "all", query = "", counts = { log: 0, info: 0, warn: 0, error: 0, debug: 0 };
   var fpsHist = [], fpsWindow = []; // fpsWindow: last ~60s of samples
+  var hist = [], HIST_MAX = 2400, lastEngine = null, marks = []; // hist: 0.5 s samples for the Timeline tab (~20 min)
   var MAXLOGS = 3000;
 
   // ---- viewport ----
@@ -392,6 +403,8 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   function onFps(m) {
     fpsHist.push(m.fps); if (fpsHist.length > 64) fpsHist.shift();
     fpsWindow.push(m); if (fpsWindow.length > 120) fpsWindow.shift();
+    hist.push({ t: m.t || Date.now(), fps: m.fps, worstMs: m.worstMs, heapMB: m.heapMB, drawCalls: m.drawCalls, eng: lastEngine }); if (hist.length > HIST_MAX) hist.shift();
+    if (perf.tab === "graph") scheduleGraph();
     var el = $("fps"); el.textContent = m.fps + " fps"; el.className = m.fps >= 55 ? "" : m.fps >= 30 ? "warn" : "bad";
     el.title = "worst frame " + m.worstMs + " ms" + (m.drawCalls != null ? " · " + m.drawCalls + " draw calls/frame" : "");
     $("heap").textContent = (m.heapMB != null ? m.heapMB + " MB" : "") + (m.drawCalls ? (m.heapMB != null ? " · " : "") + m.drawCalls + " dc" : "");
@@ -518,13 +531,14 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   function setTab(t) {
     perf.tab = t;
     Array.prototype.forEach.call(document.querySelectorAll("#dbar .tab"), function (b) { b.classList.toggle("on", b.dataset.tab === t); });
-    $("drawer").classList.toggle("perf", t === "perf");
+    $("drawer").classList.toggle("perf", t === "perf"); $("drawer").classList.toggle("graph", t === "graph");
+    if (t === "graph") { var want = activeLanes().length * 54 + 14 + 18 + 40, have = parseInt($("drawer").style.height || "220", 10); if (have < want) $("drawer").style.height = Math.round(Math.min(window.innerHeight * 0.6, want)) + "px"; renderLaneChips(); scheduleGraph(); }
     if (t === "perf") { if (parseInt($("drawer").style.height || "220", 10) < 340) $("drawer").style.height = Math.round(Math.min(window.innerHeight * 0.48, 460)) + "px"; perfTick(); }
   }
   Array.prototype.forEach.call(document.querySelectorAll("#dbar .tab"), function (b) { b.onclick = function () { setTab(b.dataset.tab); }; });
   $("resetm").onclick = function () { askGame("reset_hitches").then(function () { perf.heapHist = []; perfTick(); }).catch(function () {}); };
   $("prof").onclick = runProfile;
-  setInterval(function () { if (perf.tab === "perf" && !$("drawer").classList.contains("hidden") && !document.hidden) perfTick(); }, 1000);
+  setInterval(function () { if (connected && !document.hidden) perfTick(); }, 1000);
 
   function perfTick() {
     if (!connected) { $("perfbody").innerHTML = '<div class="muted" style="padding:12px 0">Waiting for the game hook…</div>'; return; }
@@ -539,10 +553,11 @@ export function renderShell({ title, source, gameSrc, isolation }) {
       var gm = m.game && m.game.present && m.game.metrics && !m.game.metrics.__error && !m.game.metrics.__pending ? m.game.metrics : null;
       var ent = gm ? (gm.nodes != null ? gm.nodes : gm.entities != null ? gm.entities : gm.objects) : null;
       if (typeof ent === "number") { perf.nodeHist.push({ t: now, n: ent }); while (perf.nodeHist.length && now - perf.nodeHist[0].t > 60000) perf.nodeHist.shift(); }
+      lastEngine = gm ? engineSample(gm, ent) : null;
       if (m.memory && m.memory.heapMB != null) { perf.heapHist.push({ t: now, mb: m.memory.heapMB }); while (perf.heapHist.length && now - perf.heapHist[0].t > 60000) perf.heapHist.shift(); }
-      if (!perf.timeline || (perf.timeline.firstWebglDrawMs === null && m.uptimeMs < 60000)) askGame("load_timeline").then(function (t) { perf.timeline = t; renderPerf(); }).catch(function () {});
-      renderPerf();
-    }).catch(function (e) { $("perfhint").textContent = "metrics: " + e.message; });
+      if (!perf.timeline || (perf.timeline.firstWebglDrawMs === null && m.uptimeMs < 60000)) askGame("load_timeline").then(function (t) { perf.timeline = t; if (perf.tab === "perf") renderPerf(); }).catch(function () {});
+      if (perf.tab === "perf") renderPerf();
+    }).catch(function (e) { if (perf.tab === "perf") $("perfhint").textContent = "metrics: " + e.message; });
   }
   function kv(label, val, cls, title) { return '<span class="kv ' + (cls || "") + '"' + (title ? ' title="' + esc(title) + '"' : "") + '><i>' + esc(label) + '</i>' + esc(String(val)) + '</span>'; }
   function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
@@ -691,17 +706,191 @@ export function renderShell({ title, source, gameSrc, isolation }) {
       .then(function () { perf.profiling = false; $("prof").classList.remove("busy"); $("prof").lastChild.textContent = "Profile"; $("prof").disabled = false; renderPerf(); });
   }
 
+  // ---- timeline graph ----
+  var LANES = [
+    { key: "fps", label: "FPS", color: "#3fcf8e", refs: [60, 30], floor: 60, zero: true, dec: 0, tone: function (v) { return v >= 55 ? "" : v >= 30 ? "warn" : "bad"; } },
+    { key: "worstMs", label: "Frame (worst)", unit: " ms", color: "#f2b84b", refs: [16.7, 33.3], floor: 33.3, cap: 120, zero: true, dec: 1, tone: function (v) { return v > 50 ? "bad" : v > 33.3 ? "warn" : ""; } },
+    { key: "drawCalls", label: "Draw calls", color: "#7aa2ff", floor: 8, zero: true, dec: 0 },
+    { key: "heapMB", label: "JS heap", unit: " MB", color: "#c58af9", zero: false, dec: 0, opt: true },
+    { key: "eng.processMs", label: "Engine process", unit: " ms", color: "#ff8c69", refs: [16.7], floor: 16.7, cap: 120, zero: true, dec: 1, opt: true, tone: function (v) { return v > 16.7 ? "bad" : v > 8 ? "warn" : ""; } },
+    { key: "eng.physicsMs", label: "Engine physics", unit: " ms", color: "#ffb36b", refs: [16.7], floor: 4, cap: 120, zero: true, dec: 2, opt: true },
+    { key: "eng.renderMs", label: "Engine render", unit: " ms", color: "#ff9fb0", refs: [16.7], floor: 16.7, cap: 120, zero: true, dec: 1, opt: true },
+    { key: "eng.scriptMs", label: "Engine script", unit: " ms", color: "#e0b86b", refs: [16.7], floor: 16.7, cap: 120, zero: true, dec: 1, opt: true },
+    { key: "eng.entities", label: "Nodes", color: "#6bd6e0", zero: false, dec: 0, opt: true },
+  ];
+  var TONE = { "": "#d7dae0", warn: "#f2b84b", bad: "#ff6b6b" };
+  var G = { win: 60000, hover: null, off: {}, raf: 0, ro: null };
+  try { var offSaved = JSON.parse(localStorage.getItem("gp.graphOff") || "{}"); if (offSaved && typeof offSaved === "object") G.off = offSaved; } catch (e) {}
+  function engineSample(gm, ent) {
+    var o = {};
+    ["processMs", "physicsMs", "renderMs", "scriptMs"].forEach(function (k) { if (typeof gm[k] === "number") o[k] = gm[k]; });
+    if (typeof ent === "number") o.entities = ent;
+    return o;
+  }
+  function addMark(kind, name, t) { marks.push({ kind: kind, name: String(name || kind).slice(0, 40), t: t || Date.now() }); if (marks.length > 300) marks.shift(); if (perf.tab === "graph") scheduleGraph(); }
+  function laneVal(smp, key) {
+    if (key.indexOf("eng.") === 0) return smp.eng ? smp.eng[key.slice(4)] : null;
+    return smp[key];
+  }
+  function laneHasData(l) { for (var i = hist.length - 1; i >= 0 && i >= hist.length - 600; i--) { var v = laneVal(hist[i], l.key); if (typeof v === "number") return true; } return false; }
+  function activeLanes() { return LANES.filter(function (l) { return !G.off[l.key] && (!l.opt || laneHasData(l)); }); }
+  function fmtLane(l, v) { return v == null ? "–" : (l.dec ? v.toFixed(l.dec) : Math.round(v)) + (l.unit || ""); }
+  function renderLaneChips() {
+    var el = $("glanes"), h = "";
+    LANES.forEach(function (l) {
+      if (l.opt && !laneHasData(l)) return;
+      var on = !G.off[l.key];
+      h += '<button type="button" class="tog" data-lane="' + l.key + '" aria-pressed="' + on + '" title="' + (on ? "Hide" : "Show") + ' ' + esc(l.label) + '"><i' + (on ? ' style="background:' + l.color + '"' : "") + '></i>' + esc(l.label) + '</button>';
+    });
+    if (el.innerHTML !== h) el.innerHTML = h;
+  }
+  $("glanes").addEventListener("click", function (e) {
+    var b = e.target.closest("[data-lane]"); if (!b) return;
+    var k = b.dataset.lane; if (G.off[k]) delete G.off[k]; else G.off[k] = 1;
+    try { localStorage.setItem("gp.graphOff", JSON.stringify(G.off)); } catch (err) {}
+    renderLaneChips(); scheduleGraph();
+  });
+  $("gwin").onchange = function () { G.win = Number($("gwin").value); scheduleGraph(); };
+  $("gcsv").onclick = function () {
+    var cols = ["time", "fps", "worstMs", "drawCalls", "heapMB", "processMs", "physicsMs", "renderMs", "scriptMs", "entities"];
+    var lines = [cols.join(",")];
+    hist.forEach(function (s) {
+      var e = s.eng || {};
+      lines.push([new Date(s.t).toISOString(), s.fps, s.worstMs, s.drawCalls, s.heapMB == null ? "" : s.heapMB, e.processMs == null ? "" : e.processMs, e.physicsMs == null ? "" : e.physicsMs, e.renderMs == null ? "" : e.renderMs, e.scriptMs == null ? "" : e.scriptMs, e.entities == null ? "" : e.entities].join(","));
+    });
+    var blob = new Blob([lines.join(String.fromCharCode(10))], { type: "text/csv" }), a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = "gamelab-timeline-" + new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-") + ".csv"; a.click();
+    setTimeout(function () { URL.revokeObjectURL(a.href); }, 2000);
+  };
+  function history(o) {
+    o = o || {}; var win = o.windowMs || 60000, step = Math.max(1, o.step || 1), now = Date.now();
+    var src = hist.filter(function (s) { return !win || now - s.t <= win; });
+    var out = [];
+    for (var i = src.length - 1; i >= 0; i -= step) { var s = src[i]; out.unshift({ t: new Date(s.t).toISOString().slice(11, 23), ago: Math.round((now - s.t) / 100) / 10, fps: s.fps, worstMs: s.worstMs, drawCalls: s.drawCalls, heapMB: s.heapMB, engine: s.eng }); }
+    var mk = marks.filter(function (m) { return !win || now - m.t <= win; }).map(function (m) { return { t: new Date(m.t).toISOString().slice(11, 23), ago: Math.round((now - m.t) / 100) / 10, kind: m.kind, name: m.name }; });
+    return { samples: out, marks: mk.slice(-60), intervalMs: 500 * step, windowMs: win, total: hist.length };
+  }
+  function scheduleGraph() { if (G.raf) return; G.raf = requestAnimationFrame(function () { G.raf = 0; drawGraph(); }); }
+  function drawGraph() {
+    var box = $("graph"), c = $("gc"); if (box.clientWidth === 0) return;
+    var lanes = activeLanes(), LANE_MIN = 44, AXIS = 18, GUT = 46, MK = 14;
+    var W = box.clientWidth, H = Math.max(box.clientHeight, lanes.length * LANE_MIN + AXIS + MK), dpr = window.devicePixelRatio || 1;
+    if (c.width !== Math.round(W * dpr) || c.height !== Math.round(H * dpr)) { c.width = Math.round(W * dpr); c.height = Math.round(H * dpr); c.style.height = H + "px"; }
+    var ctx = c.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, W, H);
+    $("gempty").style.display = hist.length < 3 ? "flex" : "none";
+    if (hist.length < 3 || !lanes.length) { if (hist.length >= 3) { ctx.fillStyle = "#8b93a3"; ctx.font = "11.5px " + MONO; ctx.textAlign = "center"; ctx.fillText("All series hidden", W / 2, H / 2); } return; }
+    var now = Date.now(), t1 = now, t0 = G.win ? now - G.win : Math.min(hist[0].t, now - 10000);
+    var PW = W - GUT, laneH = (H - AXIS - MK) / lanes.length;
+    var X = function (t) { return (t - t0) / (t1 - t0) * PW; };
+    var vis = [], i0 = 0; for (var i = 0; i < hist.length; i++) if (hist[i].t >= t0 - 1000) { i0 = i; break; }
+    vis = hist.slice(i0);
+    // hover sample
+    var hs = null;
+    if (G.hover != null) { var ht = t0 + (G.hover / PW) * (t1 - t0), best = 1e12; for (var j = 0; j < vis.length; j++) { var d = Math.abs(vis[j].t - ht); if (d < best) { best = d; hs = vis[j]; } } if (hs && Math.abs(X(hs.t) - G.hover) > 28) hs = null; }
+    ctx.font = "10px " + MONO; ctx.textBaseline = "middle";
+    lanes.forEach(function (l, li) {
+      var top = MK + li * laneH, bot = top + laneH, labelYs = [];
+      // range
+      var mn = Infinity, mx = -Infinity;
+      for (var k = 0; k < vis.length; k++) { var v = laneVal(vis[k], l.key); if (typeof v === "number") { if (v < mn) mn = v; if (v > mx) mx = v; } }
+      if (mn === Infinity) { mn = 0; mx = l.floor || 1; }
+      if (l.zero) mn = 0; else { var pad = Math.max((mx - mn) * 0.15, mx === mn ? Math.abs(mx) * 0.05 || 1 : 0); mn -= pad; mx += pad; }
+      if (l.floor && mx < l.floor) mx = l.floor;
+      if (l.cap && mx > l.cap) mx = l.cap;
+      if (mx <= mn) mx = mn + 1;
+      var Y = function (v) { return bot - 6 - Math.max(0, Math.min(1, (v - mn) / (mx - mn))) * (laneH - 24); };
+      // separator
+      ctx.strokeStyle = "#1a1e27"; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0, Math.round(bot) + 0.5); ctx.lineTo(W, Math.round(bot) + 0.5); ctx.stroke();
+      // reference lines
+      (l.refs || []).forEach(function (r) {
+        if (r < mn || r > mx) return;
+        var y = Math.round(Y(r)) + 0.5; ctx.strokeStyle = "#2a3140"; ctx.setLineDash([3, 4]); ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(PW, y); ctx.stroke(); ctx.setLineDash([]);
+        gutter(String(r), y);
+      });
+      // axis extremes in gutter (skip labels that would collide)
+      function gutter(txt, y) { for (var q = 0; q < labelYs.length; q++) if (Math.abs(labelYs[q] - y) < 10) return; labelYs.push(y); ctx.fillStyle = "#5b6371"; ctx.textAlign = "left"; ctx.fillText(txt, PW + 6, y); }
+      gutter(fmtLane(l, mx).replace(/ .*/, ""), top + 10);
+      if (!l.zero) gutter(fmtLane(l, mn).replace(/ .*/, ""), bot - 7);
+      // series
+      var path = false, lastX = null, lastY = null;
+      ctx.beginPath();
+      for (var k2 = 0; k2 < vis.length; k2++) {
+        var s = vis[k2], v2 = laneVal(s, l.key);
+        if (typeof v2 !== "number") { path = false; continue; }
+        var x = X(s.t), y = Y(v2);
+        if (!path) { ctx.moveTo(x, y); path = true; } else ctx.lineTo(x, y);
+        lastX = x; lastY = y;
+      }
+      ctx.strokeStyle = l.color; ctx.lineWidth = 1.5; ctx.lineJoin = "round"; ctx.stroke();
+      // area fill (light) — same path, closed to the lane floor
+      ctx.save(); ctx.globalAlpha = 0.09; ctx.fillStyle = l.color; ctx.beginPath(); path = false; var startX = null;
+      for (var k3 = 0; k3 < vis.length; k3++) {
+        var s3 = vis[k3], v3 = laneVal(s3, l.key);
+        if (typeof v3 !== "number") { if (path) { ctx.lineTo(lastSegX, bot - 6); ctx.lineTo(startX, bot - 6); ctx.closePath(); } path = false; continue; }
+        var x3 = X(s3.t), y3 = Y(v3);
+        if (!path) { startX = x3; ctx.moveTo(x3, bot - 6); ctx.lineTo(x3, y3); path = true; } else ctx.lineTo(x3, y3);
+        var lastSegX = x3;
+      }
+      if (path) { ctx.lineTo(lastSegX, bot - 6); ctx.lineTo(startX, bot - 6); ctx.closePath(); }
+      ctx.fill(); ctx.restore();
+      // live dot
+      if (lastX != null && !hs) { ctx.fillStyle = l.color; ctx.beginPath(); ctx.arc(lastX, lastY, 2.5, 0, Math.PI * 2); ctx.fill(); }
+      // legend: label + value (hover or latest)
+      var cur = hs ? laneVal(hs, l.key) : (vis.length ? laneVal(vis[vis.length - 1], l.key) : null);
+      if (hs && typeof cur === "number") { ctx.fillStyle = l.color; ctx.beginPath(); ctx.arc(X(hs.t), Y(cur), 3, 0, Math.PI * 2); ctx.fill(); }
+      ctx.textAlign = "left"; ctx.fillStyle = l.color; ctx.font = "600 10.5px " + MONO; ctx.fillText(l.label, 8, top + 11);
+      var lw = ctx.measureText(l.label).width;
+      ctx.font = "11px " + MONO; ctx.fillStyle = TONE[l.tone && typeof cur === "number" ? l.tone(cur) : ""]; ctx.fillText(fmtLane(l, cur), 8 + lw + 10, top + 11);
+    });
+    // marks: events / errors / reloads
+    ctx.font = "10px " + MONO; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+    var lastLabelEnd = -1e9, gh = MK + lanes.length * laneH;
+    marks.forEach(function (m) {
+      if (m.t < t0 || m.t > t1) return;
+      var x = Math.round(X(m.t)) + 0.5, col = m.kind === "error" ? "#ff6b6b" : m.kind === "sys" ? "#4fa3ff" : "#3fcf8e";
+      ctx.strokeStyle = col; ctx.globalAlpha = 0.5; ctx.setLineDash([2, 3]); ctx.beginPath(); ctx.moveTo(x, MK - 3); ctx.lineTo(x, gh); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
+      ctx.fillStyle = col; ctx.fillRect(x - 1.5, MK - 5, 3, 3);
+      var label = m.kind === "error" ? "error" : m.name, tw = ctx.measureText(label).width;
+      if (x + 4 + tw < PW && x > lastLabelEnd + 6) { ctx.fillText(label, x + 4, 7); lastLabelEnd = x + 4 + tw; }
+    });
+    // time axis
+    var span = t1 - t0, stepMs = span <= 30000 ? 5000 : span <= 60000 ? 10000 : span <= 300000 ? 60000 : span <= 900000 ? 120000 : 300000;
+    ctx.fillStyle = "#5b6371"; ctx.textBaseline = "middle"; ctx.textAlign = "center";
+    for (var back = stepMs; back < span; back += stepMs) {
+      var tx = X(t1 - back); if (tx < 20) break;
+      ctx.strokeStyle = "#1a1e27"; ctx.beginPath(); ctx.moveTo(Math.round(tx) + 0.5, gh); ctx.lineTo(Math.round(tx) + 0.5, gh + 4); ctx.stroke();
+      ctx.fillText("-" + (back >= 60000 ? (back / 60000) + " min" : (back / 1000) + " s"), tx, gh + 10);
+    }
+    ctx.textAlign = "right"; ctx.fillStyle = hs ? "#5b6371" : "#8b93a3"; ctx.fillText("now", PW - 2, gh + 10);
+    // crosshair
+    if (hs) {
+      var hx = Math.round(X(hs.t)) + 0.5;
+      ctx.strokeStyle = "#8b93a3"; ctx.globalAlpha = 0.6; ctx.beginPath(); ctx.moveTo(hx, MK); ctx.lineTo(hx, gh); ctx.stroke(); ctx.globalAlpha = 1;
+      var ago = (now - hs.t) / 1000, lab = "-" + (ago >= 60 ? Math.floor(ago / 60) + "m " + Math.round(ago % 60) + "s" : ago.toFixed(1) + " s");
+      ctx.font = "600 10px " + MONO; var tw2 = ctx.measureText(lab).width; ctx.textAlign = "center";
+      ctx.fillStyle = "#171a21"; ctx.fillRect(Math.min(Math.max(hx - tw2 / 2 - 4, 0), PW - tw2 - 8), gh + 2, tw2 + 8, 14);
+      ctx.fillStyle = "#d7dae0"; ctx.fillText(lab, Math.min(Math.max(hx, tw2 / 2 + 4), PW - tw2 / 2 - 4), gh + 10);
+    }
+  }
+  var MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
+  $("gc").addEventListener("pointermove", function (e) { var r = $("gc").getBoundingClientRect(); G.hover = e.clientX - r.left; scheduleGraph(); });
+  $("gc").addEventListener("pointerleave", function () { G.hover = null; scheduleGraph(); });
+  if (window.ResizeObserver) { G.ro = new ResizeObserver(function () { if (perf.tab === "graph") scheduleGraph(); }); G.ro.observe($("graph")); }
+  else window.addEventListener("resize", function () { if (perf.tab === "graph") scheduleGraph(); });
+  setInterval(function () { if (perf.tab === "graph" && !document.hidden && !connected) scheduleGraph(); }, 1000);
+
   // ---- messages from the game hook ----
   window.addEventListener("message", function (e) {
     var m = e.data;
     if (!m || m.__gp !== 1 || e.source !== game.contentWindow) return;
     if (m.type === "hello") {
       env = m.env; connected = true; loadedAt = Date.now(); fpsHist = []; fpsWindow = [];
-      $("conn").className = "dot on"; renderBadges(); drawSpark(); perfReset();
+      $("conn").className = "dot on"; renderBadges(); drawSpark(); perfReset(); lastEngine = null;
+      if (hist.length) addMark("sys", "reload");
       addLog({ level: "sys", text: "— page loaded " + new Date().toLocaleTimeString() + (env.crossOriginIsolated ? " · isolated" : "") + " —", t: Date.now() });
-    } else if (m.type === "console") addLog({ level: m.level, text: m.text, stack: m.stack, t: m.t });
+    } else if (m.type === "console") { addLog({ level: m.level, text: m.text, stack: m.stack, t: m.t }); if (m.level === "error") addMark("error", m.text, m.t); }
     else if (m.type === "fps") onFps(m);
-    else if (m.type === "game_event") { perf.events.push(m); if (perf.events.length > 30) perf.events.shift(); addLog({ level: "event", name: m.name, text: m.data != null ? JSON.stringify(m.data) : "", t: Date.now() }); if (perf.tab === "perf") renderPerf(); }
+    else if (m.type === "game_event") { addMark("event", m.name); perf.events.push(m); if (perf.events.length > 30) perf.events.shift(); addLog({ level: "event", name: m.name, text: m.data != null ? JSON.stringify(m.data) : "", t: Date.now() }); if (perf.tab === "perf") renderPerf(); }
     else if (m.type === "result") {
       var local = uiPending[m.id];
       if (local) { delete uiPending[m.id]; clearTimeout(local.timer); m.ok ? local.resolve(m.value) : local.reject(new Error(m.error || "failed")); }
@@ -741,6 +930,7 @@ export function renderShell({ title, source, gameSrc, isolation }) {
         }
         case "clear_logs": clearLogs(); return sendResult(cmd.id, true, { cleared: true });
         case "get_stats": return sendResult(cmd.id, true, stats());
+        case "get_history": return sendResult(cmd.id, true, history(cmd));
         case "reload": reload(); return sendResult(cmd.id, true, { reloaded: true });
         default: return sendResult(cmd.id, false, null, "Unknown shell command " + cmd.kind);
       }

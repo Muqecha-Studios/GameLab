@@ -71,6 +71,15 @@ export const TOOLS = [
         handler: (p, i) => p.driverFor(i?.target).stats(),
     },
     {
+        name: "get_history",
+        description: "Time series from the panel's Timeline tab: FPS, worst frame ms, draw calls/frame, JS heap and engine timings (processMs/physicsMs/…/entities when the game exposes window.__game) sampled every 0.5 s, plus marks (game events, console errors, reloads). Use it to see when a stall happened relative to events, or to compare before/after an action.",
+        inputSchema: { type: "object", properties: {
+            windowMs: { type: "number", description: "How far back to return (ms). Default 60000; 0 = everything recorded (up to ~20 min)." },
+            step: { type: "integer", minimum: 1, description: "Return every Nth sample (1 = every 0.5 s). Use 4–10 for long windows." },
+        }, additionalProperties: false },
+        handler: (p, i) => p.panelDriver().history({ windowMs: i?.windowMs, step: i?.step }),
+    },
+    {
         name: "get_metrics",
         description: "Detailed in-page performance metrics from the hook: frame-time percentiles (p50/p95/p99/max), frame hitches > 50 ms with timestamps, WebGL counters (draw calls, instances, texture uploads, shader compiles, buffer uploads, context losses), heap and wasm size, visibility state.",
         inputSchema: { type: "object", properties: { target: TARGET_PROP, resetHitches: { type: "boolean", description: "Clear the hitch log and frame-time samples after reading." } }, additionalProperties: false },

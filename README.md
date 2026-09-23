@@ -67,6 +67,7 @@ Artifacts (screenshots, `.report.json`, `.trace.json`, `.webm`, `.har`) go to `-
 ```sh
 gamelab serve builds/web --open                # serves + opens the shell (stats, console, Perf tab) in your browser
 gamelab serve http://localhost:5173/           # proxy a dev server (Vite/Phaser/etc.)
+gamelab serve https://example.com/play/ --open # profile an already deployed game (any command takes a URL in place of a dir)
 
 gamelab run smoke.json builds/web --profile budget-android --trace     # 360×800 @2x, touch, Android UA, cpu ×6, fast-3g
 gamelab run smoke.json builds/web --device "iPhone 14" --landscape --cpu 4

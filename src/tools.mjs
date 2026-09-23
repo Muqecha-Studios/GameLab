@@ -21,7 +21,7 @@ export const TARGET_PROP = {
 export const OPEN_INPUT_SCHEMA = {
     type: "object",
     properties: {
-        url: { type: "string", description: "URL of a running dev server to preview (e.g. http://localhost:5173/). Proxied so console/FPS capture works; HMR WebSockets pass through." },
+        url: { type: "string", description: "URL of a running dev server (http://localhost:5173/) or an already deployed game (https://example.com/play/). Reverse-proxied so the hook is injected and console/FPS/metrics capture works; WebSockets pass through. For deployed games pass the game's own page (e.g. the itch.io/Newgrounds iframe URL), not a store page wrapping it." },
         dir: { type: "string", description: "Absolute path to a folder containing a built web game (index.html, Godot HTML export, Unity WebGL build). Served with correct MIME/encoding headers. Defaults to the working directory (or its dist/build/builds/web/export/web/public) when it has an .html entry." },
         entry: { type: "string", description: "HTML entry relative to dir. Auto-detected (index.html, or the export's .html)." },
         watch: { type: ["boolean", "string"], description: "Auto-reload when files change. true (default in dir mode) watches dir; a path watches that folder instead (useful with url mode); false disables." },

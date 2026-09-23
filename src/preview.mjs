@@ -14,7 +14,7 @@ import path from "node:path";
 import { HOOK_JS } from "./hook.mjs";
 import { renderShell } from "./shell.mjs";
 import { VIEWPORTS, allDevices, resolveDevice, upsertUserDevice, deleteUserDevice, emulationFor, labOptionsFor, GROUP_LABELS, USER_DEVICES_PATH } from "./devices.mjs";
-import { HOOK_PATH, serveStatic, proxyRequest, proxyUpgrade, detectEntry, looksLikeWasmExport, applyIsolation } from "./server.mjs";
+import { HOOK_PATH, serveStatic, proxyRequest, proxyUpgrade, detectEntry, looksLikeWasmExport, applyIsolation, isLoopback } from "./server.mjs";
 import { Lab } from "./lab.mjs";
 
 export const SHELL_PREFIX = "/__gp/";
@@ -59,9 +59,11 @@ export async function resolveConfig(input = {}, { cwd } = {}) {
     if (input.url) {
         let target;
         try { target = new URL(input.url); } catch { throw new GameLabError("bad_url", `Invalid url: ${input.url}`); }
-        if (target.protocol !== "http:") throw new GameLabError("bad_url", "Only http:// dev server URLs can be proxied (https is not supported).");
+        if (target.protocol !== "http:" && target.protocol !== "https:") throw new GameLabError("bad_url", "url must be http:// or https:// (a running dev server or a deployed game).");
         cfg.mode = "url";
         cfg.target = target;
+        cfg.remote = !isLoopback(target.hostname);
+        if (cfg.remote && input.watch === undefined) cfg.autoReload = false;
         cfg.gameSrc = target.pathname + target.search;
         cfg.source = target.origin + (target.pathname !== "/" ? target.pathname : "");
         cfg.watchDir = typeof input.watch === "string" ? expandHome(input.watch) : null;

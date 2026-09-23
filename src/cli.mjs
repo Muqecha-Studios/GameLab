@@ -13,7 +13,8 @@ const HELP = `gamelab v${version} — test lab for HTML5/WebGL games (Godot, Uni
 
 Usage:
   gamelab serve  [dir|url] [--isolation auto|on|off] [--port N] [--out DIR] [--no-watch] [--open] [--profile ID]
-      Serve a build (or proxy a dev server) with the hook injected; prints the shell URL.
+      Serve a build, or reverse-proxy a dev server / a deployed https game, with the hook injected;
+      prints the shell URL. Every command below accepts a deployed URL in place of a dir.
       The shell (any browser tab) shows FPS, console, and a Perf tab: frame times, hitches,
       WebGL counters, load timeline, findings, and a CPU profile of hot functions. --open launches it.
   gamelab run    <scenario.json> [dir|url] [--profile budget-android] [--device "iPhone 14"] [--landscape]

@@ -1,14 +1,20 @@
 // Game delivery layer: static serving of a built web game directory (with
 // MIME types, Content-Encoding for Unity .br/.gz artifacts and optional
 // COOP/COEP isolation headers), or a reverse proxy in front of a running dev
-// server (Vite, Phaser, Godot's built-in server, …) including WebSocket
-// upgrades so HMR keeps working. HTML responses get the hook script injected.
+// server (Vite, Phaser, Godot's built-in server, …) or a deployed game over
+// https, including WebSocket upgrades so HMR / multiplayer keep working. HTML
+// responses get the hook script injected (decompressing gzip/br first) and,
+// for remote targets, have CSP / HSTS stripped and same-origin absolute URLs
+// pointed back at the proxy so every asset still flows through it.
 
 import { createReadStream } from "node:fs";
 import { stat, readFile, readdir } from "node:fs/promises";
 import http from "node:http";
+import https from "node:https";
 import net from "node:net";
+import tls from "node:tls";
 import path from "node:path";
+import { gunzipSync, brotliDecompressSync, inflateSync, inflateRawSync } from "node:zlib";
 
 export const HOOK_PATH = "/__gp/hook.js";
 
@@ -142,27 +148,66 @@ export async function serveStatic(req, res, { dir, isolation }) {
 
 const HOP_BY_HOP = new Set(["connection", "keep-alive", "transfer-encoding", "upgrade", "proxy-connection", "te", "trailer"]);
 
+export const isLoopback = (hostname) => /^(localhost|127\.\d+\.\d+\.\d+|\[?::1\]?|0\.0\.0\.0)$/i.test(hostname);
+const targetPort = (target) => Number(target.port) || (target.protocol === "https:" ? 443 : 80);
+
+function decode(buf, encoding) {
+    switch ((encoding || "").toLowerCase()) {
+        case "gzip": case "x-gzip": return gunzipSync(buf);
+        case "br": return brotliDecompressSync(buf);
+        case "deflate": try { return inflateSync(buf); } catch { return inflateRawSync(buf); }
+        default: return buf;
+    }
+}
+
+// Remote HTML: drop CSP (it would block the injected hook), point absolute
+// same-origin URLs at the proxy so wasm/pck fetches stay same-origin.
+function rewriteRemoteHtml(html, target, proxyOrigin) {
+    html = html.replace(/<meta[^>]+http-equiv=["']?content-security-policy["']?[^>]*>/gi, "");
+    const host = target.host.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    html = html.replace(new RegExp("https?://" + host + "(?=[/\"'\\s?#])", "g"), proxyOrigin);
+    html = html.replace(new RegExp("(?<=[\"'(=\\s])//" + host + "(?=[/\"'\\s?#])", "g"), proxyOrigin);
+    return html;
+}
+
 export function proxyRequest(req, res, { target, isolation }) {
+    const remote = !isLoopback(target.hostname);
+    const proxyOrigin = "http://" + (req.headers.host || "127.0.0.1");
     const headers = {};
     for (const [k, v] of Object.entries(req.headers)) if (!HOP_BY_HOP.has(k)) headers[k] = v;
     headers.host = target.host;
-    headers["accept-encoding"] = "identity"; // keep HTML injectable
+    if (!remote) headers["accept-encoding"] = "identity"; // dev servers: keep HTML injectable without decoding
     if (headers.referer) headers.referer = headers.referer.replace(/^https?:\/\/[^/]+/, target.origin);
     if (headers.origin) headers.origin = target.origin;
+    if (remote) headers["accept-encoding"] = "gzip, deflate, br";
 
-    const upstream = http.request({ hostname: target.hostname, port: target.port || 80, method: req.method, path: req.url, headers }, (ures) => {
+    const mod = target.protocol === "https:" ? https : http;
+    const upstream = mod.request({ hostname: target.hostname, port: targetPort(target), servername: target.hostname, method: req.method, path: req.url, headers }, (ures) => {
         const out = {};
         for (const [k, v] of Object.entries(ures.headers)) if (!HOP_BY_HOP.has(k)) out[k] = v;
         delete out["x-frame-options"];
+        if (remote) {
+            delete out["content-security-policy"]; delete out["content-security-policy-report-only"];
+            delete out["strict-transport-security"]; delete out["report-to"]; delete out["nel"];
+            // the browser talks to us over plain http on localhost: keep cookies scoped to the proxy
+            if (out["set-cookie"]) out["set-cookie"] = [].concat(out["set-cookie"]).map((c) => c.replace(/;\s*(domain=[^;]*|secure)/gi, "").replace(/;\s*samesite=none/gi, "; SameSite=Lax"));
+            if (out.location) out.location = String(out.location).replace(target.origin, proxyOrigin);
+        }
         applyIsolation(out, isolation);
         out["cache-control"] = "no-store";
 
         const type = String(ures.headers["content-type"] || "");
-        if (type.includes("text/html") && !ures.headers["content-encoding"]) {
+        const enc = ures.headers["content-encoding"];
+        if (type.includes("text/html") && (!enc || remote)) {
             const chunks = [];
             ures.on("data", (c) => chunks.push(c));
             ures.on("end", () => {
-                const html = injectHook(Buffer.concat(chunks).toString("utf8"));
+                let html;
+                try { html = decode(Buffer.concat(chunks), enc).toString("utf8"); }
+                catch { res.writeHead(502, { "Content-Type": "text/plain" }); return res.end("gamelab: could not decode " + enc + " HTML from " + target.origin); }
+                if (remote) html = rewriteRemoteHtml(html, target, proxyOrigin);
+                html = injectHook(html);
+                delete out["content-encoding"];
                 out["content-length"] = Buffer.byteLength(html);
                 out["document-policy"] = "js-profiling";
                 res.writeHead(ures.statusCode || 200, out);
@@ -178,8 +223,8 @@ export function proxyRequest(req, res, { target, isolation }) {
         if (res.headersSent) return res.destroy();
         const body = `<!doctype html><meta charset="utf-8"><body style="font:14px system-ui;color:#ddd;background:#111;padding:24px">
 <h2 style="margin:0 0 8px">Cannot reach <code>${target.origin}</code></h2>
-<p>${escapeHtml(err.message)}</p><p>Is the dev server running? This page retries every 2s.</p>
-<script>setTimeout(()=>location.reload(),2000)</script></body>`;
+<p>${escapeHtml(err.message)}</p><p>${remote ? "Check the URL and your connection. This page retries every 5s." : "Is the dev server running? This page retries every 2s."}</p>
+<script>setTimeout(()=>location.reload(),${remote ? 5000 : 2000})</script></body>`;
         res.writeHead(502, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
         res.end(body);
     });
@@ -187,7 +232,9 @@ export function proxyRequest(req, res, { target, isolation }) {
 }
 
 export function proxyUpgrade(req, socket, head, { target }) {
-    const upstream = net.connect(target.port || 80, target.hostname, () => {
+    const port = targetPort(target);
+    const connect = (cb) => target.protocol === "https:" ? tls.connect({ host: target.hostname, port, servername: target.hostname }, cb) : net.connect(port, target.hostname, cb);
+    const upstream = connect(() => {
         const lines = [`${req.method} ${req.url} HTTP/1.1`];
         for (let i = 0; i < req.rawHeaders.length; i += 2) {
             const key = req.rawHeaders[i];

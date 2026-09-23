@@ -35,6 +35,9 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   button.icon { width:26px; padding:0; justify-content:center; color:var(--mute); } button.icon:hover { color:var(--fg); }
   button svg { width:14px; height:14px; flex:none; }
   .tog { color:var(--mute); } .tog[aria-pressed=true] { color:var(--fg); background:#1d2a3d; border-color:#2f4b70; }
+  #toggle { padding:0 7px; } #tcount { font:600 11px var(--mono); font-variant-numeric:tabular-nums; } #tcount:empty { display:none; }
+  #toggle.warn { color:var(--warn); border-color:#4a3b14; } #toggle.err { color:var(--err); border-color:#5a2a2a; }
+  #collapse { margin-left:2px; } #drawer.perf #collapse, #drawer:not(.perf) #collapse { display:inline-flex; }
   .tog i { width:7px; height:7px; border-radius:50%; background:var(--bd2); transition:background var(--ease); } .tog[aria-pressed=true] i { background:var(--acc); }
   .dot { width:8px; height:8px; border-radius:50%; background:var(--err); flex:none; transition:background var(--ease); box-shadow:0 0 0 2px rgba(255,107,107,.15); }
   .dot.on { background:var(--ok); box-shadow:0 0 0 2px rgba(63,207,142,.15); }
@@ -133,8 +136,7 @@ export function renderShell({ title, source, gameSrc, isolation }) {
     </span>
     <span class="sep"></span>
     <span class="grp">
-      <button id="toggle">Console</button>
-      <button id="perfbtn" title="Frame times, hitches, WebGL counters, load timeline, findings, CPU profile">Perf</button>
+      <button id="toggle" class="tog" aria-pressed="true" aria-controls="drawer" title="Show / hide the Console & Perf drawer (D)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M2 9.5h12"/></svg><span id="tcount"></span></button>
       <button id="reload" class="primary" title="Reload game (R)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"/><path d="M13.5 2.5v3.2h-3.2"/></svg>Reload</button>
     </span>
   </div>
@@ -169,6 +171,7 @@ export function renderShell({ title, source, gameSrc, isolation }) {
       <button id="resetm" title="Reset hitch log and frame-time samples">Reset</button>
       <select id="profms" title="Profile duration"><option value="3000">3 s</option><option value="5000" selected>5 s</option><option value="10000">10 s</option><option value="20000">20 s</option></select>
       <button id="prof" class="primary" title="Sample the main thread (JS Self-Profiling API) and list hot functions"><i></i>Profile</button>
+      <button id="collapse" class="icon" title="Hide drawer (D)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 6l4 4 4-4"/></svg></button>
     </div>
     <div id="log"><div id="empty">No console output yet.<br><span class="muted">console.*, errors, unhandled rejections and game events from the page appear here.</span></div></div>
     <div id="perf"><div id="perfbody" class="muted" style="padding:12px 0">Waiting for the game hook…</div></div>
@@ -215,7 +218,11 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   $("auto").onclick = function () { postState({ autoReload: this.getAttribute("aria-pressed") !== "true" }); };
   $("iso").onclick = function () { postState({ isolation: this.getAttribute("aria-pressed") !== "true" }); };
   $("reload").onclick = reload;
-  window.addEventListener("keydown", function (e) { if ((e.key === "r" || e.key === "R") && !e.metaKey && !e.ctrlKey && e.target === document.body) reload(); });
+  window.addEventListener("keydown", function (e) {
+    if (e.metaKey || e.ctrlKey || e.target !== document.body) return;
+    if (e.key === "r" || e.key === "R") reload();
+    if (e.key === "d" || e.key === "D") setDrawer($("drawer").classList.contains("hidden"));
+  });
 
   function reload() {
     connected = false; $("conn").className = "dot";
@@ -439,8 +446,9 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   function updateCount() {
     $("count").textContent = logs.length ? counts.error + " err · " + counts.warn + " warn · " + logs.length + " total" : "";
     var total = counts.error + counts.warn;
-    $("toggle").textContent = "Console" + (total ? " (" + total + ")" : "");
-    $("toggle").style.color = counts.error ? "var(--err)" : counts.warn ? "var(--warn)" : "";
+    $("tcount").textContent = total ? String(total) : "";
+    $("toggle").className = "tog" + (counts.error ? " err" : counts.warn ? " warn" : "");
+    $("toggle").title = "Show / hide the Console & Perf drawer (D)" + (total ? " \u00b7 " + counts.error + " errors, " + counts.warn + " warnings" : "");
   }
   function addLog(e) {
     var last = logs[logs.length - 1];
@@ -466,7 +474,9 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   });
   $("search").oninput = function () { query = this.value.toLowerCase(); rerender(); };
   $("clear").onclick = clearLogs;
-  $("toggle").onclick = function () { var d = $("drawer"); if (d.classList.contains("hidden") || perf.tab !== "console") { d.classList.remove("hidden"); setTab("console"); } else d.classList.add("hidden"); applyViewport(); };
+  function setDrawer(open) { $("drawer").classList.toggle("hidden", !open); $("toggle").setAttribute("aria-pressed", String(open)); applyViewport(); if (open && perf.tab === "perf") perfTick(); }
+  $("toggle").onclick = function () { setDrawer($("drawer").classList.contains("hidden")); };
+  $("collapse").onclick = function () { setDrawer(false); };
   (function grip() {
     var g = $("grip"), startY, startH;
     g.onmousedown = function (e) { startY = e.clientY; startH = $("drawer").offsetHeight; document.body.style.userSelect = "none"; window.onmousemove = move; window.onmouseup = up; };
@@ -495,7 +505,6 @@ export function renderShell({ title, source, gameSrc, isolation }) {
     if (t === "perf") { if (parseInt($("drawer").style.height || "220", 10) < 340) $("drawer").style.height = Math.round(Math.min(window.innerHeight * 0.48, 460)) + "px"; perfTick(); }
   }
   Array.prototype.forEach.call(document.querySelectorAll("#dbar .tab"), function (b) { b.onclick = function () { setTab(b.dataset.tab); }; });
-  $("perfbtn").onclick = function () { var d = $("drawer"); if (d.classList.contains("hidden") || perf.tab !== "perf") { d.classList.remove("hidden"); setTab("perf"); } else { d.classList.add("hidden"); } applyViewport(); };
   $("resetm").onclick = function () { askGame("reset_hitches").then(function () { perf.heapHist = []; perfTick(); }).catch(function () {}); };
   $("prof").onclick = runProfile;
   setInterval(function () { if (perf.tab === "perf" && !$("drawer").classList.contains("hidden") && !document.hidden) perfTick(); }, 1000);

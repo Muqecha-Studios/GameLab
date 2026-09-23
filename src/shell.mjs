@@ -103,8 +103,13 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   #graph { flex:1; display:none; position:relative; min-height:0; overflow:auto; }
   #drawer.graph #graph { display:block; } #drawer.graph #log, #drawer.graph .con, #drawer.graph #resetm, #drawer.graph #profms, #drawer.graph #prof { display:none; }
   .gr { display:none; } #drawer.graph .gr { display:inline-flex; } #drawer.graph select.gr { display:inline-block; }
-  #glanes { gap:4px; flex:1; min-width:0; overflow-x:auto; scrollbar-width:none; -webkit-mask:linear-gradient(90deg,#000 calc(100% - 18px),transparent); mask:linear-gradient(90deg,#000 calc(100% - 18px),transparent); }
-  #glanes::-webkit-scrollbar { display:none; } #glanes .tog { height:22px; padding:0 8px 0 6px; color:var(--mute); white-space:nowrap; flex:none; } #glanes .tog[aria-pressed=true] { color:var(--fg); }
+  #glanes { gap:4px; flex:1; min-width:0; overflow-x:auto; scroll-behavior:smooth; scrollbar-width:none; }
+  #glanes::-webkit-scrollbar { display:none; }
+  /* edge fades only on the side(s) that actually have more chips */
+  #glanes.fr { -webkit-mask:linear-gradient(90deg,#000 calc(100% - 22px),transparent); mask:linear-gradient(90deg,#000 calc(100% - 22px),transparent); }
+  #glanes.fl { -webkit-mask:linear-gradient(90deg,transparent,#000 22px); mask:linear-gradient(90deg,transparent,#000 22px); }
+  #glanes.fl.fr { -webkit-mask:linear-gradient(90deg,transparent,#000 22px,#000 calc(100% - 22px),transparent); mask:linear-gradient(90deg,transparent,#000 22px,#000 calc(100% - 22px),transparent); }
+  #dbar .gnav { width:20px; margin:0 -2px; } #dbar [hidden] { display:none !important; } #glanes .tog { height:22px; padding:0 8px 0 6px; color:var(--mute); white-space:nowrap; flex:none; } #glanes .tog[aria-pressed=true] { color:var(--fg); }
   #gc { display:block; width:100%; cursor:crosshair; touch-action:none; }
   #gempty { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; line-height:1.6; pointer-events:none; }
   .sec { display:grid; grid-template-columns:64px 1fr; gap:2px 10px; padding:4px 0; border-bottom:1px solid #12151b; }
@@ -178,7 +183,7 @@ export function renderShell({ title, source, gameSrc, isolation }) {
       <input id="search" class="con" type="search" placeholder="Filter…" aria-label="Filter console" />
       <span class="muted con" id="count"></span>
       <button id="clear" class="con">Clear</button>
-      <span id="glanes" class="gr" role="group" aria-label="Series"></span>
+      <button id="glprev" class="gr icon gnav" hidden title="Scroll series left"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M10 4L6 8l4 4"/></svg></button><span id="glanes" class="gr" role="group" aria-label="Series"></span><button id="glnext" class="gr icon gnav" hidden title="Scroll series right"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M6 4l4 4-4 4"/></svg></button>
       <span id="perfhint" class="grow"></span>
       <select id="gwin" class="gr" title="Time window"><option value="30000">30 s</option><option value="60000" selected>1 min</option><option value="300000">5 min</option><option value="0">All</option></select>
       <button id="gcsv" class="gr" title="Download every sample as CSV">CSV</button>
@@ -851,8 +856,24 @@ export function renderShell({ title, source, gameSrc, isolation }) {
       var on = laneOn(l);
       h += '<button type="button" class="tog" data-lane="' + l.key + '" aria-pressed="' + on + '" title="' + (on ? "Hide" : "Show") + ' ' + esc(l.label) + '"><i' + (on ? ' style="background:' + l.color + '"' : "") + '></i>' + esc(l.label) + '</button>';
     });
-    if (el.innerHTML !== h) el.innerHTML = h;
+    if (el.innerHTML !== h) { el.innerHTML = h; laneScrollSync(); }
   }
+  // Chip bar overflow: fades + arrows only when there is more to see; a vertical
+  // wheel scrolls it sideways so mouse users are not stuck.
+  function laneScrollSync() {
+    var el = $("glanes"), max = el.scrollWidth - el.clientWidth, ov = max > 1, x = el.scrollLeft;
+    el.classList.toggle("fl", ov && x > 1); el.classList.toggle("fr", ov && x < max - 1);
+    $("glprev").hidden = $("glnext").hidden = !ov;
+    $("glprev").disabled = x <= 1; $("glnext").disabled = x >= max - 1;
+  }
+  $("glanes").addEventListener("scroll", laneScrollSync, { passive: true });
+  $("glanes").addEventListener("wheel", function (e) {
+    var el = this; if (el.scrollWidth <= el.clientWidth || Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+    el.scrollLeft += e.deltaY; e.preventDefault();
+  }, { passive: false });
+  $("glprev").onclick = function () { var el = $("glanes"); el.scrollBy({ left: -el.clientWidth * 0.7, behavior: "smooth" }); };
+  $("glnext").onclick = function () { var el = $("glanes"); el.scrollBy({ left: el.clientWidth * 0.7, behavior: "smooth" }); };
+  if (window.ResizeObserver) new ResizeObserver(laneScrollSync).observe($("glanes"));
   $("glanes").addEventListener("click", function (e) {
     var b = e.target.closest("[data-lane]"); if (!b) return;
     var k = b.dataset.lane, l = LANES.filter(function (x) { return x.key === k; })[0]; if (!l) return;

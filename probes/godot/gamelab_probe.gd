@@ -36,7 +36,7 @@ var _cmd_cb: JavaScriptObject
 var _window: JavaScriptObject
 
 # Shared with probes/unity/GameLabProbe.jslib — keep in sync.
-const _BOOTSTRAP_JS := """
+const _BOOTSTRAP_JS := r"""
 (function () {
   if (window.__game && window.__game.__gamelabProbe) return;
   var snap = { state: {}, metrics: {} }, queue = [];

@@ -21,7 +21,8 @@ It serves your build (or proxies your dev server) with an instrumented hook, dri
 | Area | Capabilities |
 |---|---|
 | Serving | Static build folder with correct wasm/br/gz MIME, optional COOP/COEP (SharedArrayBuffer), or a proxy to a dev server with HMR WebSocket passthrough; file watcher → auto-reload |
-| Hook (in-page) | FPS + frame-time percentiles, hitch log (>50 ms), WebGL draw/instance/texture/shader/buffer counters, context-loss tracking, first frame / first draw, load timeline (slowest & largest assets), console + error capture, `window.__gp` API |
+| Hook (in-page) | FPS + frame-time percentiles, hitch log (>50 ms), WebGL draw/instance/texture/shader/buffer counters, context-loss tracking, first frame / first draw, load timeline (slowest & largest assets), console + error capture, **CPU profile** (JS Self-Profiling API: hot functions, subtrees, per-file, busy/idle/GC), `window.__gp` API |
+| Shell (browser tab) | The served page at `/__gp/`: the game in an iframe with FPS badge, viewport presets, isolation toggle, a Console drawer and a **Perf** tab — live frame/hitch/WebGL/memory/load stats, plain-English **Findings** (e.g. "not holding 60 fps", "shader compiles after startup", "heap growing 12 MB/min", "wasm served uncompressed"), and a ● Profile button that lists the hottest functions with file:line |
 | Lab (Playwright Chromium) | Trusted keyboard/mouse, touch (tap/hold/swipe), virtual gamepad, device presets (iPhone/Pixel/iPad…), CPU throttling, network presets (slow-3g … offline), visibility/lifecycle freeze, WebGL context loss, Chrome performance trace (+ long-task/GC summary), Playwright trace, video, HAR |
 | Scenarios | JSON steps → pass/fail report: `waitFor`, `key`, `click`, `tap`, `swipe`, `gamepad`, `eval`, `assert`, `expectFps`, `expectNoErrors`, `expectNoHitches`, `screenshot`, `throttle`, … |
 | Export | Standalone Playwright project (`tests/*.spec.ts`, config with a webServer that reproduces the headers) so the same scenario runs in CI with pixel-diff screenshots |
@@ -53,17 +54,17 @@ Then tell the agent, e.g. *"open the Godot export in builds/web, run it on an iP
 
 1. `open { dir }` → returns a shell URL a human can open to watch/play, and the direct game URL.
 2. `lab_open { device: "iPhone 14", landscape: true, cpu: 4 }` → real Chromium.
-3. `run_scenario`, `get_metrics`, `trace_start/stop`, `screenshot` (returned inline as an image), …
+3. `run_scenario`, `get_metrics`, `profile`, `trace_start/stop`, `screenshot` (returned inline as an image), …
 4. `export_test { outDir: "tests/web" }` to turn the run into a CI test.
 
-MCP tools: `open close list` + `reload get_logs clear_logs get_stats get_metrics get_load_timeline screenshot eval press_key click set_visibility lose_webgl_context set_viewport set_options lab_open lab_close lab_status touch gamepad set_throttle trace_start trace_stop run_scenario export_test`. Every tool accepts an optional `instance` (defaults to the last opened) and most accept `target: panel | lab | auto`.
+MCP tools: `open close list` + `reload get_logs clear_logs get_stats get_metrics get_load_timeline profile screenshot eval press_key click set_visibility lose_webgl_context set_viewport set_options lab_open lab_close lab_status touch gamepad set_throttle trace_start trace_stop run_scenario export_test`. Every tool accepts an optional `instance` (defaults to the last opened) and most accept `target: panel | lab | auto`.
 
 Artifacts (screenshots, `.report.json`, `.trace.json`, `.webm`, `.har`) go to `--out`, `$GAMELAB_OUT` or `./.gamelab`.
 
 ## Use it from the terminal / CI
 
 ```sh
-gamelab serve builds/web                       # prints the shell URL; open it in a browser
+gamelab serve builds/web --open                # serves + opens the shell (stats, console, Perf tab) in your browser
 gamelab serve http://localhost:5173/           # proxy a dev server (Vite/Phaser/etc.)
 
 gamelab run smoke.json builds/web --device "iPhone 14" --landscape --cpu 4 --trace

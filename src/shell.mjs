@@ -55,6 +55,21 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   .row.sys { color:var(--acc); justify-content:center; background:#0f1520; }
   .row .stack { display:block; color:#b07a7a; font-size:10.5px; margin-top:2px; }
   #empty { color:var(--mute); text-align:center; padding:20px; }
+  #dbar .tab { padding:2px 10px; font-weight:600; } #dbar .tab.on { background:#2a3243; border-color:var(--acc); }
+  #dbar .sep { width:1px; height:16px; background:var(--bd); }
+  #perf { flex:1; overflow:auto; display:none; font:11.5px/1.5 var(--mono); padding:6px 10px 10px; }
+  #drawer.perf #perf { display:block; } #drawer.perf #log, #drawer.perf .con { display:none; }
+  .sec { display:grid; grid-template-columns:64px 1fr; gap:2px 10px; padding:4px 0; border-bottom:1px solid #12151b; }
+  .sec > b { color:var(--mute); font-weight:600; }
+  .kv { display:inline-block; margin-right:14px; } .kv i { color:var(--mute); font-style:normal; margin-right:4px; }
+  .kv.warn { color:var(--warn);} .kv.bad { color:var(--err);}
+  #findings li { margin:1px 0; } #findings li.warn { color:var(--warn);} #findings li.bad { color:#ff8a8a;} #findings li.info { color:#9cc7ff;}
+  #findings ul { margin:0; padding-left:16px; }
+  table.prof { border-collapse:collapse; width:100%; margin-top:4px; } table.prof td, table.prof th { text-align:left; padding:1px 8px 1px 0; white-space:nowrap; } table.prof th { color:var(--mute); font-weight:600; }
+  table.prof td.num, table.prof th.num { text-align:right; } table.prof td.fn { width:100%; max-width:420px; overflow:hidden; text-overflow:ellipsis; } table.prof td.src { color:var(--mute); max-width:280px; overflow:hidden; text-overflow:ellipsis; }
+  .bar { display:inline-block; height:8px; background:var(--acc); vertical-align:middle; margin-right:4px; border-radius:2px; }
+  #perfhint { color:var(--mute); }
+  #drawer:not(.perf) #resetm, #drawer:not(.perf) #profms, #drawer:not(.perf) #prof, #drawer:not(.perf) #perfhint { display:none; }
 </style>
 </head>
 <body>
@@ -77,18 +92,25 @@ export function renderShell({ title, source, gameSrc, isolation }) {
     <canvas id="spark" width="192" height="44"></canvas>
     <span id="fps">-- fps</span><span id="heap"></span>
     <button id="toggle">Console</button>
+    <button id="perfbtn" title="Frame times, hitches, WebGL counters, load timeline, findings, CPU profile">Perf</button>
     <button id="reload" class="primary" title="Reload game (R)">↻ Reload</button>
   </div>
   <div id="stage"><div id="wrap"><iframe id="game" src="${escapeHtml(gameSrc)}" allow="autoplay; fullscreen; gamepad; xr-spatial-tracking; cross-origin-isolated" allowfullscreen></iframe></div><span id="vplabel"></span></div>
   <div id="drawer">
     <div id="grip"></div>
     <div id="dbar">
-      <button class="f on" data-f="all">All</button><button class="f" data-f="log">Log</button><button class="f" data-f="warn">Warn</button><button class="f" data-f="error">Errors</button>
-      <input id="search" placeholder="filter…" />
-      <span class="muted" id="count"></span>
-      <button id="clear">Clear</button>
+      <button class="tab on" data-tab="console">Console</button><button class="tab" data-tab="perf">Perf</button><span class="sep"></span>
+      <button class="f con on" data-f="all">All</button><button class="f con" data-f="log">Log</button><button class="f con" data-f="warn">Warn</button><button class="f con" data-f="error">Errors</button>
+      <input id="search" class="con" placeholder="filter…" />
+      <span class="muted con" id="count"></span>
+      <button id="clear" class="con">Clear</button>
+      <span id="perfhint" class="grow"></span>
+      <button id="resetm" title="Reset hitch log and frame-time samples">Reset</button>
+      <select id="profms" title="Profile duration"><option value="3000">3 s</option><option value="5000" selected>5 s</option><option value="10000">10 s</option><option value="20000">20 s</option></select>
+      <button id="prof" class="primary" title="Sample the main thread (JS Self-Profiling API) and list hot functions">● Profile</button>
     </div>
     <div id="log"><div id="empty">No console output yet.</div></div>
+    <div id="perf"><div id="perfbody" class="muted" style="padding:12px 0">Waiting for the game hook…</div></div>
   </div>
 </div>
 <script>
@@ -253,7 +275,7 @@ export function renderShell({ title, source, gameSrc, isolation }) {
   });
   $("search").oninput = function () { query = this.value.toLowerCase(); rerender(); };
   $("clear").onclick = clearLogs;
-  $("toggle").onclick = function () { $("drawer").classList.toggle("hidden"); applyViewport(); };
+  $("toggle").onclick = function () { var d = $("drawer"); if (d.classList.contains("hidden") || perf.tab !== "console") { d.classList.remove("hidden"); setTab("console"); } else d.classList.add("hidden"); applyViewport(); };
   (function grip() {
     var g = $("grip"), startY, startH;
     g.onmousedown = function (e) { startY = e.clientY; startH = $("drawer").offsetHeight; document.body.style.userSelect = "none"; window.onmousemove = move; window.onmouseup = up; };
@@ -261,17 +283,156 @@ export function renderShell({ title, source, gameSrc, isolation }) {
     function up() { window.onmousemove = window.onmouseup = null; document.body.style.userSelect = ""; }
   })();
 
+
+  // ---- perf tab ----
+  var uiPending = {}, uiSeq = 0;
+  function askGame(kind, extra, timeoutMs) {
+    return new Promise(function (resolve, reject) {
+      if (!connected) return reject(new Error("game not connected"));
+      var id = "ui:" + (++uiSeq);
+      var timer = setTimeout(function () { delete uiPending[id]; reject(new Error("timeout")); }, timeoutMs || 5000);
+      uiPending[id] = { resolve: resolve, reject: reject, timer: timer };
+      game.contentWindow.postMessage(Object.assign({ __gp: 1, type: "cmd", id: id, kind: kind }, extra || {}), "*");
+    });
+  }
+  var perf = { tab: "console", timer: null, prevM: null, prevT: 0, rates: {}, heapHist: [], timeline: null, lastM: null, profile: null, profiling: false, shaderBase: null, shaderBaseAt: 0 };
+  function perfReset() { perf.prevM = null; perf.rates = {}; perf.heapHist = []; perf.timeline = null; perf.lastM = null; perf.profile = null; perf.shaderBase = null; }
+  function setTab(t) {
+    perf.tab = t;
+    Array.prototype.forEach.call(document.querySelectorAll("#dbar .tab"), function (b) { b.classList.toggle("on", b.dataset.tab === t); });
+    $("drawer").classList.toggle("perf", t === "perf");
+    if (t === "perf") { if (parseInt($("drawer").style.height || "220", 10) < 340) $("drawer").style.height = Math.round(Math.min(window.innerHeight * 0.48, 460)) + "px"; perfTick(); }
+  }
+  Array.prototype.forEach.call(document.querySelectorAll("#dbar .tab"), function (b) { b.onclick = function () { setTab(b.dataset.tab); }; });
+  $("perfbtn").onclick = function () { var d = $("drawer"); if (d.classList.contains("hidden") || perf.tab !== "perf") { d.classList.remove("hidden"); setTab("perf"); } else { d.classList.add("hidden"); } applyViewport(); };
+  $("resetm").onclick = function () { askGame("reset_hitches").then(function () { perf.heapHist = []; perfTick(); }).catch(function () {}); };
+  $("prof").onclick = runProfile;
+  setInterval(function () { if (perf.tab === "perf" && !$("drawer").classList.contains("hidden") && !document.hidden) perfTick(); }, 1000);
+
+  function perfTick() {
+    if (!connected) { $("perfbody").innerHTML = '<div class="muted" style="padding:12px 0">Waiting for the game hook…</div>'; return; }
+    askGame("metrics").then(function (m) {
+      var now = Date.now();
+      if (perf.prevM && now > perf.prevT) {
+        var dt = (now - perf.prevT) / 1000, a = m.webgl, b = perf.prevM.webgl;
+        perf.rates = { tex: (a.textureUploads - b.textureUploads) / dt, buf: (a.bufferUploads - b.bufferUploads) / dt, shaders: (a.shaderCompiles - b.shaderCompiles) / dt, draws: (a.drawCallsTotal - b.drawCallsTotal) / dt };
+      }
+      perf.prevM = m; perf.prevT = now; perf.lastM = m;
+      if (perf.shaderBase === null && m.uptimeMs > 10000) { perf.shaderBase = m.webgl.shaderCompiles; perf.shaderBaseAt = m.uptimeMs; }
+      if (m.memory && m.memory.heapMB != null) { perf.heapHist.push({ t: now, mb: m.memory.heapMB }); while (perf.heapHist.length && now - perf.heapHist[0].t > 60000) perf.heapHist.shift(); }
+      if (!perf.timeline || (perf.timeline.firstWebglDrawMs === null && m.uptimeMs < 60000)) askGame("load_timeline").then(function (t) { perf.timeline = t; renderPerf(); }).catch(function () {});
+      renderPerf();
+    }).catch(function (e) { $("perfhint").textContent = "metrics: " + e.message; });
+  }
+  function kv(label, val, cls, title) { return '<span class="kv ' + (cls || "") + '"' + (title ? ' title="' + esc(title) + '"' : "") + '><i>' + esc(label) + '</i>' + esc(String(val)) + '</span>'; }
+  function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]; }); }
+  function secs(ms) { return ms == null ? "–" : ms >= 1000 ? (ms / 1000).toFixed(1) + " s" : Math.round(ms) + " ms"; }
+  function mb(kb) { return kb >= 1024 ? (kb / 1024).toFixed(1) + " MB" : Math.round(kb) + " KB"; }
+  function r1(n) { return Math.round(n * 10) / 10; }
+  function heapDelta() {
+    if (perf.heapHist.length < 5) return null;
+    var first = perf.heapHist[0], last = perf.heapHist[perf.heapHist.length - 1], span = (last.t - first.t) / 1000;
+    if (span < 20) return null;
+    return { perMin: r1((last.mb - first.mb) * 60 / span), span: Math.round(span), from: first.mb, to: last.mb };
+  }
+  function findings(m) {
+    var out = [], f = m.frame, t = perf.timeline, r = perf.rates, w = m.webgl, gameplay = m.uptimeMs > 10000;
+    var add = function (cls, text) { out.push({ cls: cls, text: text }); };
+    if (w.contextLostCount) add("bad", "WebGL context was lost " + w.contextLostCount + "× — check the engine recovers (screen not black, no 'does not belong to this context' spam).");
+    if (f.samples > 60) {
+      if (f.p95Ms > 33.4) add("bad", "Not holding 30 fps: p95 frame time " + f.p95Ms + " ms (p99 " + f.p99Ms + " ms). Profile to find the hot path.");
+      else if (f.p95Ms > 17.5) add("warn", "Not holding 60 fps: p95 frame time " + f.p95Ms + " ms (p99 " + f.p99Ms + " ms).");
+      else add("ok", "Frame time steady: p95 " + f.p95Ms + " ms, p99 " + f.p99Ms + " ms.");
+    }
+    if (m.hitches.count) {
+      var rec = m.hitches.recent, spiky = rec.filter(function (h) { return h.draws > 2 * Math.max(1, f.lastDrawCalls); }).length;
+      var late = rec.filter(function (h) { return (t && t.firstWebglDrawMs != null) ? h.at > t.firstWebglDrawMs + 3000 : h.at > 8000; }).length;
+      if (late) add("warn", late + " hitch" + (late > 1 ? "es" : "") + " > " + m.hitches.thresholdMs + " ms during gameplay (worst " + Math.max.apply(null, rec.map(function (h) { return h.dt; })) + " ms)" + (spiky ? "; " + spiky + " coincide with a draw-call spike (scene/level load or spawn burst?)" : "; not draw-related — likely GC, asset decode, shader compile or a JS/wasm spike. Profile during a hitch.") );
+      else add("info", m.hitches.count + " hitch" + (m.hitches.count > 1 ? "es" : "") + " at startup only (wasm compile / first draw) — fine.");
+    }
+    if (gameplay && perf.shaderBase !== null && w.shaderCompiles - perf.shaderBase > 0) add("warn", (w.shaderCompiles - perf.shaderBase) + " shader compile" + (w.shaderCompiles - perf.shaderBase > 1 ? "s" : "") + " after the first 10 s — compiling on first use causes hitches; warm up materials/shaders on a loading screen.");
+    if (gameplay && r.tex > 2) add("warn", "Texture uploads every frame (" + r1(r.tex) + "/s) — video/canvas→texture or dynamic atlases; cache or throttle if possible.");
+    if (f.lastDrawCalls > 800) add("warn", f.lastDrawCalls + " draw calls/frame — batch sprites/meshes or use instancing.");
+    var hd = heapDelta();
+    if (hd && hd.perMin > 8) add("warn", "JS heap growing " + (hd.perMin > 0 ? "+" : "") + hd.perMin + " MB/min (" + hd.from + " → " + hd.to + " MB over " + hd.span + " s) — possible leak; take two heap snapshots in DevTools.");
+    if (m.memory && m.memory.heapLimitMB && m.memory.heapMB > 0.7 * m.memory.heapLimitMB) add("bad", "JS heap at " + m.memory.heapMB + " / " + m.memory.heapLimitMB + " MB — close to the limit, tabs will be killed on mobile.");
+    if (t) {
+      if (t.firstWebglDrawMs != null && t.firstWebglDrawMs > 4000) add("warn", "First WebGL draw at " + secs(t.firstWebglDrawMs) + " — slow boot. Largest: " + (t.resources.largest[0] ? t.resources.largest[0].name.split("/").pop() + " " + mb(t.resources.largest[0].decodedKB) : "?"));
+      var wasm = t.resources.largest.filter(function (x) { return /\\.wasm(\\?|$)/.test(x.name); })[0];
+      if (wasm && wasm.transferKB && wasm.decodedKB && wasm.transferKB > 0.85 * wasm.decodedKB && wasm.decodedKB > 2048) add("info", wasm.name.split("/").pop() + " is served uncompressed (" + mb(wasm.transferKB) + " on the wire). Brotli/gzip cuts it ~4×; here that's a local server, but check your production host.");
+      if (wasm && wasm.decodedKB > 25000) add("info", "wasm is " + mb(wasm.decodedKB) + " — for Godot, strip unused modules in a custom export template; for Unity, enable code stripping + Brotli.");
+      if (t.resources.totalDecodedKB > 60000) add("info", "Total assets " + mb(t.resources.totalDecodedKB) + " over " + t.resources.count + " requests.");
+    }
+    if (env && !env.crossOriginIsolated && env.hardwareConcurrency > 1) add("info", "Not cross-origin isolated: no SharedArrayBuffer/threads (needed for Godot thread-enabled exports & Unity multithreading). Toggle 'isolated' to test.");
+    if (perf.profile && perf.profile.supported) {
+      var hot = perf.profile.hotFunctions[0];
+      if (hot && hot.selfPct >= 25) add("warn", "Hot function: " + hot.name + " — " + hot.selfPct + "% of busy time (" + (hot.url ? hot.url.split("/").pop() + ":" + hot.line : "native") + ").");
+      if (perf.profile.busyPct > 85) add("warn", "Main thread " + perf.profile.busyPct + "% busy during the profile — no headroom; low-end devices will drop frames.");
+      if (perf.profile.gcMs > perf.profile.durationMs * 0.05) add("warn", "GC took " + perf.profile.gcMs + " ms (" + Math.round(perf.profile.gcMs / perf.profile.durationMs * 100) + "%) — reduce per-frame allocations (closures, arrays, vectors).");
+    }
+    return out;
+  }
+  function renderPerf() {
+    var m = perf.lastM; if (!m) return;
+    var f = m.frame, w = m.webgl, r = perf.rates, t = perf.timeline, h = '';
+    var fcls = function (v) { return v > 33.4 ? "bad" : v > 17.5 ? "warn" : ""; };
+    h += '<div class="sec"><b>Frame</b><div>' + kv("p50", f.p50Ms + " ms", fcls(f.p50Ms)) + kv("p95", f.p95Ms + " ms", fcls(f.p95Ms)) + kv("p99", f.p99Ms + " ms", fcls(f.p99Ms)) + kv("max", f.maxMs + " ms", fcls(f.maxMs)) + kv("samples", f.samples) +
+      kv("hitches", m.hitches.count + " >" + m.hitches.thresholdMs + "ms", m.hitches.count ? "warn" : "") + kv("visibility", m.visibility) + kv("uptime", secs(m.uptimeMs)) + '</div></div>';
+    if (m.hitches.recent.length) {
+      h += '<div class="sec"><b>Hitches</b><div>' + m.hitches.recent.slice(-12).map(function (x) { return kv("@" + secs(x.at), x.dt + " ms" + (x.draws != null ? " · " + x.draws + " dc" : ""), x.dt > 200 ? "bad" : "warn"); }).join("") + '</div></div>';
+    }
+    h += '<div class="sec"><b>WebGL</b><div>' + kv("draws/frame", f.lastDrawCalls) + kv("draws/s", Math.round(r.draws || 0)) + kv("instances", w.instancesTotal) + kv("tex uploads", w.textureUploads + (r.tex ? " (" + r1(r.tex) + "/s)" : ""), r.tex > 2 ? "warn" : "") +
+      kv("buffer uploads", w.bufferUploads + (r.buf ? " (" + Math.round(r.buf) + "/s)" : "")) + kv("shader compiles", w.shaderCompiles, (perf.shaderBase !== null && w.shaderCompiles > perf.shaderBase) ? "warn" : "") + kv("programs", w.programLinks) + kv("contexts", w.contexts) + kv("ctx lost", w.contextLostCount, w.contextLostCount ? "bad" : "") + '</div></div>';
+    var hd = heapDelta();
+    h += '<div class="sec"><b>Memory</b><div>' + kv("heap", m.memory.heapMB != null ? m.memory.heapMB + " MB" + (m.memory.heapLimitMB ? " / " + m.memory.heapLimitMB : "") : "n/a (needs Chromium)") + (hd ? kv("trend", (hd.perMin > 0 ? "+" : "") + hd.perMin + " MB/min", hd.perMin > 8 ? "warn" : "") : "") + kv("wasm", m.memory.wasmBytes ? (m.memory.wasmBytes / 1048576).toFixed(1) + " MB" : "–") + '</div></div>';
+    if (t) {
+      h += '<div class="sec"><b>Load</b><div>' + kv("first frame", secs(t.firstFrameMs)) + kv("first draw", secs(t.firstWebglDrawMs), t.firstWebglDrawMs > 4000 ? "warn" : "") + (t.navigation ? kv("load event", secs(t.navigation.loadEventMs)) : "") + kv("requests", t.resources.count) + kv("transfer", mb(t.resources.totalTransferKB)) + kv("decoded", mb(t.resources.totalDecodedKB)) +
+        '<br>' + '<i class="muted">slowest</i> ' + t.resources.slowest.slice(0, 5).map(function (x) { return kv(x.name.split("/").pop(), secs(x.durationMs)); }).join("") +
+        '<br>' + '<i class="muted">largest</i> ' + t.resources.largest.slice(0, 5).map(function (x) { return kv(x.name.split("/").pop(), mb(x.decodedKB)); }).join("") +
+        (t.userMarks.length ? '<br><i class="muted">marks</i> ' + t.userMarks.slice(0, 10).map(function (x) { return kv(x.name, secs(x.atMs)); }).join("") : "") + '</div></div>';
+    }
+    var fs = findings(m);
+    h += '<div class="sec" id="findings"><b>Findings</b><div>' + (fs.length ? '<ul>' + fs.map(function (x) { return '<li class="' + x.cls + '">' + esc(x.text) + '</li>'; }).join("") + '</ul>' : '<span class="muted">Collecting…</span>') + '</div></div>';
+    if (perf.profile) h += renderProfile(perf.profile);
+    else h += '<div class="sec"><b>Profile</b><div class="muted">Press ● Profile while playing to sample the main thread and list the hottest functions (Chromium; JS Self-Profiling API).' + (perf.profiling ? " Sampling…" : "") + '</div></div>';
+    $("perfbody").innerHTML = h;
+    $("perfhint").textContent = perf.profiling ? "profiling…" : "";
+  }
+  function renderProfile(p) {
+    if (!p.supported) return '<div class="sec"><b>Profile</b><div class="warn">' + esc(p.reason) + '</div></div>';
+    var maxSelf = p.hotFunctions[0] ? p.hotFunctions[0].selfPct : 1;
+    var hot = p.hotFunctions.filter(function (x) { return x.selfMs > 0; }); if (!hot.length) hot = p.hotFunctions.slice(0, 5);
+    var rows = hot.slice(0, 20).map(function (x) {
+      return '<tr><td class="num">' + '<span class="bar" style="width:' + Math.max(2, Math.round(60 * x.selfPct / Math.max(1, maxSelf))) + 'px"></span>' + x.selfPct + '%</td><td class="num">' + x.selfMs + '</td><td class="num muted">' + x.totalPct + '%</td><td class="fn" title="' + esc(x.name) + '">' + esc(x.name) + '</td><td class="src" title="' + esc(x.url || "") + '">' + esc(x.url ? x.url.split("/").pop() + ":" + x.line : "native") + '</td></tr>';
+    }).join("");
+    var files = p.byFile.slice(0, 6).map(function (x) { return kv(x.url.charAt(0) === "(" ? x.url : (x.url.split("/").pop() || x.url), x.selfPct + "%"); }).join("");
+    return '<div class="sec"><b>Profile</b><div>' + kv("window", secs(p.durationMs)) + kv("busy", p.busyPct + "%", p.busyPct > 85 ? "warn" : "") + kv("idle", p.idleMs + " ms") + kv("GC", p.gcMs + " ms", p.gcMs > p.durationMs * 0.05 ? "warn" : "") + kv("samples", p.samples) + kv("frames", p.framesRendered) + kv("draws", p.drawCalls) +
+      '<br><i class="muted">by file</i> ' + files +
+      '<table class="prof"><tr><th class="num">self</th><th class="num">ms</th><th class="num">total</th><th>function</th><th>source</th></tr>' + rows + '</table><div class="muted" style="margin-top:4px">' + esc(p.note) + '</div></div></div>';
+  }
+  function runProfile() {
+    if (perf.profiling || !connected) return;
+    var ms = Number($("profms").value) || 5000;
+    perf.profiling = true; $("prof").textContent = "● " + (ms / 1000) + " s…"; $("prof").disabled = true; renderPerf();
+    askGame("profile", { durationMs: ms }, ms + 10000).then(function (p) { perf.profile = p; }).catch(function (e) { perf.profile = { supported: false, reason: "Profile failed: " + e.message }; })
+      .then(function () { perf.profiling = false; $("prof").textContent = "● Profile"; $("prof").disabled = false; renderPerf(); });
+  }
+
   // ---- messages from the game hook ----
   window.addEventListener("message", function (e) {
     var m = e.data;
     if (!m || m.__gp !== 1 || e.source !== game.contentWindow) return;
     if (m.type === "hello") {
       env = m.env; connected = true; loadedAt = Date.now(); fpsHist = []; fpsWindow = [];
-      $("conn").className = "dot on"; renderBadges(); drawSpark();
+      $("conn").className = "dot on"; renderBadges(); drawSpark(); perfReset();
       addLog({ level: "sys", text: "— page loaded " + new Date().toLocaleTimeString() + (env.crossOriginIsolated ? " · isolated" : "") + " —", t: Date.now() });
     } else if (m.type === "console") addLog({ level: m.level, text: m.text, stack: m.stack, t: m.t });
     else if (m.type === "fps") onFps(m);
-    else if (m.type === "result") sendResult(m.id, m.ok, m.value, m.error);
+    else if (m.type === "result") {
+      var local = uiPending[m.id];
+      if (local) { delete uiPending[m.id]; clearTimeout(local.timer); m.ok ? local.resolve(m.value) : local.reject(new Error(m.error || "failed")); }
+      else sendResult(m.id, m.ok, m.value, m.error);
+    }
   });
   game.addEventListener("load", function () {
     setTimeout(function () { if (!connected) addLog({ level: "sys", text: "— page loaded but the preview hook did not run (non-HTML entry, compressed HTML, or CSP?) —", t: Date.now() }); }, 1500);

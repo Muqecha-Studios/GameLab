@@ -162,13 +162,14 @@ export const HOOK_JS = String.raw`(() => {
   let frames = 0, windowStart = performance.now(), prev = windowStart, worst = 0;
   let lastDraws = gl.draws, windowDraws = 0, lastFrameDraws = 0;
   const frameTimes = [];            // last 600 frame dts for percentiles
+  let frameCount = 0;
   function tick(now) {
     frames++; frameIndex++;
     if (firstFrameAt === null) firstFrameAt = now;
     const dt = now - prev; prev = now;
     if (frameIndex > 1) {
       if (dt > worst) worst = dt;
-      frameTimes.push(dt); if (frameTimes.length > 600) frameTimes.shift();
+      frameTimes.push(dt); if (frameTimes.length > 600) frameTimes.shift(); frameCount++;
       if (dt > HITCH_MS && !document.hidden) { hitches.push({ at: Math.round(now), dt: Math.round(dt * 10) / 10, draws: lastFrameDraws }); if (hitches.length > HITCH_MAX) hitches.shift(); }
     }
     lastFrameDraws = gl.draws - lastDraws; lastDraws = gl.draws; windowDraws += lastFrameDraws;
@@ -229,7 +230,67 @@ export const HOOK_JS = String.raw`(() => {
       if (restoreAfterMs !== null && restoreAfterMs !== undefined) { await sleep(restoreAfterMs); ext.restoreContext(); }
       return { lost: true, restored: restoreAfterMs !== null && restoreAfterMs !== undefined, contextLostCount: gl.contextLost };
     },
+    profile: profile,
   };
+
+  // ---- JS sampling profiler (JS Self-Profiling API; Chromium, needs Document-Policy: js-profiling) ----
+  let profiling = false;
+  async function profile(durationMs) {
+    durationMs = Math.max(500, Math.min(30000, Number(durationMs) || 5000));
+    if (typeof Profiler !== "function") return { supported: false, reason: "JS Self-Profiling API unavailable in this browser engine (" + (/AppleWebKit\/605/.test(navigator.userAgent) && !/Chrome/.test(navigator.userAgent) ? "WebKit" : /Firefox/.test(navigator.userAgent) ? "Firefox" : "not Chromium, or Document-Policy: js-profiling header missing") + "). Open the shell URL in Chrome/Edge, or profile in the lab (target: lab / lab_open)." };
+    if (profiling) throw new Error("A profile is already running");
+    profiling = true;
+    try {
+      const interval = 10; // ms; Chrome clamps to >= ~10 ms
+      const prof = new Profiler({ sampleInterval: interval, maxBufferSize: Math.ceil(durationMs / interval) + 100 });
+      const startDraws = gl.draws, startFrames = frameCount, t0 = performance.now();
+      await sleep(durationMs);
+      const trace = await prof.stop();
+      const wall = performance.now() - t0;
+      const { frames, stacks, samples, resources } = trace;
+      const fn = new Map(); // key -> { name, url, line, col, self, total }
+      const keyOf = (f) => f.name + "@" + (f.resourceId ?? "") + ":" + (f.line ?? "") + ":" + (f.column ?? "");
+      const labelOf = (f) => f.name || (f.resourceId != null ? "(anonymous)" : "(program)");
+      let idle = 0, gc = 0, counted = 0;
+      const pairs = new Map(); // "parentKey|childKey" -> ms, to spot pass-through wrappers
+      const prev = { t: samples[0]?.timestamp ?? t0 };
+      for (const s of samples) {
+        const dt = Math.max(0, s.timestamp - prev.t); prev.t = s.timestamp;
+        if (s.stackId == null) { idle += dt; continue; }
+        if (s.marker === "gc") gc += dt;
+        counted += dt;
+        const seen = new Set();
+        let sid = s.stackId, top = true, childKey = null;
+        while (sid != null) {
+          const st = stacks[sid]; const f = frames[st.frameId]; const k = keyOf(f);
+          let e = fn.get(k);
+          if (!e) { e = { name: labelOf(f), url: f.resourceId != null ? resources[f.resourceId] : null, line: f.line ?? null, col: f.column ?? null, self: 0, total: 0, key: k }; fn.set(k, e); }
+          if (top) e.self += dt;
+          if (!seen.has(k)) { e.total += dt; seen.add(k); if (childKey) { const pk = k + "|" + childKey; pairs.set(pk, (pairs.get(pk) || 0) + dt); } }
+          top = false; childKey = k; sid = st.parentId;
+        }
+      }
+      const r1 = (n) => Math.round(n * 10) / 10;
+      const pct = (n) => (counted ? Math.round((n / counted) * 1000) / 10 : 0);
+      const maxChild = new Map();
+      for (const [pk, ms] of pairs) { const parent = pk.slice(0, pk.indexOf("|")); if (ms > (maxChild.get(parent) || 0)) maxChild.set(parent, ms); }
+      const list = [...fn.values()].map((e) => ({ name: e.name, url: e.url ? e.url.replace(location.origin, "") : null, line: e.line, col: e.col, selfMs: r1(e.self), selfPct: pct(e.self), totalMs: r1(e.total), totalPct: pct(e.total), _branch: e.total > 0 && (maxChild.get(e.key) || 0) < 0.9 * e.total }));
+      const strip = (e) => { const { _branch, ...o } = e; return o; };
+      const bySelf = list.slice().sort((a, b) => b.selfMs - a.selfMs).slice(0, 25).map(strip);
+      // Subtrees: skip pass-through wrappers (one child holds >=90% of the total) so the list shows branch points, not the whole call chain.
+      const byTotal = list.filter((e) => e._branch).sort((a, b) => b.totalMs - a.totalMs).slice(0, 15).map(strip);
+      const byFile = new Map();
+      for (const e of list) { const k = e.url || "(native/program)"; byFile.set(k, (byFile.get(k) || 0) + e.selfMs); }
+      return {
+        supported: true, durationMs: Math.round(wall), sampleIntervalMs: interval, samples: samples.length,
+        busyMs: r1(counted), idleMs: r1(idle), busyPct: wall ? Math.round((counted / wall) * 1000) / 10 : 0, gcMs: r1(gc),
+        framesRendered: frameCount - startFrames, drawCalls: gl.draws - startDraws,
+        hotFunctions: bySelf, heaviestSubtrees: byTotal,
+        byFile: [...byFile.entries()].map(([url, ms]) => ({ url: url.replace(location.origin, ""), selfMs: r1(ms), selfPct: pct(ms) })).sort((a, b) => b.selfMs - a.selfMs).slice(0, 10),
+        note: "selfPct = share of busy main-thread time spent in the function itself; totalPct includes callees. heaviestSubtrees lists branch points only (wrappers that just forward to one callee are skipped). wasm frames appear as wasm-function[N] unless the build keeps a name section (debug export).",
+      };
+    } finally { profiling = false; }
+  }
 
   // ---- commands ----------------------------------------------------------
   const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
@@ -302,6 +363,7 @@ export const HOOK_JS = String.raw`(() => {
       case "metrics": return metrics();
       case "load_timeline": return loadTimeline();
       case "reset_hitches": window.__gp.resetHitches(); return { ok: true };
+      case "profile": return profile(cmd.durationMs);
       case "visibility": return { visibilityState: window.__gp.setVisibility(cmd.hidden === undefined ? null : cmd.hidden) };
       case "lose_context": return window.__gp.loseContext(cmd.restoreAfterMs);
       default:

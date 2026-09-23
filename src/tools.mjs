@@ -86,6 +86,19 @@ export const TOOLS = [
         handler: async (p, i) => { const d = p.driverFor(i?.target ?? "auto"); return { target: d.name, ...(await d.loadTimeline()) }; },
     },
     {
+        name: "profile",
+        description: "Sample the game's main thread for durationMs (default 5000) with the JS Self-Profiling API and return hot functions by self time, heaviest subtrees, per-file totals, busy vs idle %, and GC time — i.e. where the CPU goes in the code. Play/drive the game while it runs (it awaits). Chromium only; wasm frames show as wasm-function[N] unless the export keeps names (debug build).",
+        inputSchema: { type: "object", properties: { durationMs: { type: "integer", minimum: 500, maximum: 30000 }, target: TARGET_PROP }, additionalProperties: false },
+        handler: async (p, i) => {
+            const ms = i?.durationMs ?? 5000;
+            let d = p.driverFor(i?.target ?? "auto"), r = await d.profile(ms);
+            // Panels embedded in WebKit-based hosts lack the Profiler API: fall back to the lab when one is running.
+            if (r?.supported === false && d.name === "panel" && (i?.target ?? "auto") === "auto" && p.lab?.running) { d = p.driverFor("lab"); r = await d.profile(ms); }
+            if (r?.supported === false && d.name === "panel") r.hint = "Call lab_open (Playwright Chromium) and retry with target: \"lab\" — the lab always supports profiling.";
+            return { target: d.name, ...r };
+        },
+    },
+    {
         name: "screenshot",
         description: "Capture the game to a PNG file and return its path. panel: reads the largest <canvas> (WebGL back buffer). lab: full-page screenshot of the Playwright browser (includes DOM UI). View the file to see what the game looks like.",
         inputSchema: { type: "object", properties: { name: { type: "string", description: "Optional file name (without extension)." }, target: TARGET_PROP }, additionalProperties: false },

@@ -116,6 +116,7 @@ export async function serveStatic(req, res, { dir, isolation }) {
     if (headers["Content-Type"].startsWith("text/html") && !headers["Content-Encoding"]) {
         const html = injectHook(await readFile(file, "utf8"));
         headers["Content-Length"] = Buffer.byteLength(html);
+        headers["Document-Policy"] = "js-profiling"; // enables the JS Self-Profiling API used by the hook's profile()
         res.writeHead(200, headers);
         return res.end(req.method === "HEAD" ? undefined : html);
     }
@@ -163,6 +164,7 @@ export function proxyRequest(req, res, { target, isolation }) {
             ures.on("end", () => {
                 const html = injectHook(Buffer.concat(chunks).toString("utf8"));
                 out["content-length"] = Buffer.byteLength(html);
+                out["document-policy"] = "js-profiling";
                 res.writeHead(ures.statusCode || 200, out);
                 res.end(html);
             });

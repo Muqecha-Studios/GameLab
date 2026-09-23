@@ -1,6 +1,7 @@
 // CLI: gamelab serve | run | export | mcp | tools | config
 import { readFile } from "node:fs/promises";
 import { parseArgs } from "node:util";
+import { spawn } from "node:child_process";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { openPreview, GameLabError } from "./preview.mjs";
@@ -11,8 +12,10 @@ const { version } = createRequire(import.meta.url)("../package.json");
 const HELP = `gamelab v${version} — test lab for HTML5/WebGL games (Godot, Unity, Phaser, PixiJS, Three.js …)
 
 Usage:
-  gamelab serve  [dir|url] [--isolation auto|on|off] [--port N] [--out DIR] [--no-watch]
+  gamelab serve  [dir|url] [--isolation auto|on|off] [--port N] [--out DIR] [--no-watch] [--open]
       Serve a build (or proxy a dev server) with the hook injected; prints the shell URL.
+      The shell (any browser tab) shows FPS, console, and a Perf tab: frame times, hitches,
+      WebGL counters, load timeline, findings, and a CPU profile of hot functions. --open launches it.
   gamelab run    <scenario.json> [dir|url] [--device "iPhone 14"] [--landscape] [--cpu 4]
                  [--network slow-3g] [--headless] [--width W --height H] [--video] [--har]
                  [--trace] [--out DIR] [--json]
@@ -35,13 +38,17 @@ const OPTIONS = {
     device: { type: "string" }, landscape: { type: "boolean" }, cpu: { type: "string" }, network: { type: "string" },
     headless: { type: "boolean" }, width: { type: "string" }, height: { type: "string" }, video: { type: "boolean" }, har: { type: "boolean" },
     trace: { type: "boolean" }, json: { type: "boolean" }, viewport: { type: "string" }, overwrite: { type: "boolean" },
-    help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "v" },
+    open: { type: "boolean" }, help: { type: "boolean", short: "h" }, version: { type: "boolean", short: "v" },
 };
 
 const isUrl = (s) => /^https?:\/\//.test(s ?? "");
 const sourceInput = (s) => (s ? (isUrl(s) ? { url: s } : { dir: s }) : {});
 const outDir = (v) => path.resolve(v ?? process.env.GAMELAB_OUT ?? path.join(process.cwd(), ".gamelab"));
 const stderr = (m) => process.stderr.write(m + "\n");
+function openInBrowser(url) {
+    const [cmd, args] = process.platform === "darwin" ? ["open", [url]] : process.platform === "win32" ? ["cmd", ["/c", "start", "", url]] : ["xdg-open", [url]];
+    spawn(cmd, args, { stdio: "ignore", detached: true }).on("error", (e) => stderr(`could not open browser: ${e.message}`)).unref();
+}
 
 async function readScenario(file) {
     if (!file) throw new GameLabError("usage", "Missing <scenario.json>");
@@ -70,6 +77,7 @@ export async function main(argv = process.argv.slice(2)) {
         case "serve": {
             const p = await openPreview({ ...sourceInput(rest[0]), isolation: o.isolation, watch: o.watch }, { ...common, port: o.port ? Number(o.port) : 0 });
             console.log(`Shell:  ${p.shellUrl}\nGame:   ${p.gameUrl}\nSource: ${p.source}${p.ui.isolation ? "  (COOP/COEP on)" : ""}\nCtrl-C to stop.`);
+            if (o.open) openInBrowser(p.shellUrl);
             return keepAlive(p);
         }
 
